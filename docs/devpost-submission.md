@@ -138,17 +138,16 @@ Use the [official rules](https://twitchcon-codex.devpost.com/rules) to check the
 
 ## Project media — recommended gallery
 
-Existing files below are under the 5 MB limit. The captions distinguish actual app screenshots from fixture previews. None is proof of real Twitch message delivery. A real gameplay image should be added after the Twitch rehearsal. Devpost recommends a 3:2 ratio and allows up to 15 JPG, PNG, or GIF images; fewer strong images are sufficient.
+Four gallery images are ready now, all PNG, 3:2, and below 5 MB each. See the [gallery with previews, download links, and captions](devpost-gallery.md). Use this order:
 
 | Order | Image | Suggested caption |
 | --- | --- | --- |
-| 1 | Pending real Twitch gameplay screenshot | Riff on the couch: gameplay, conversation, and the animated OBS overlay. |
-| 2 | [Quick picks](../output/screenshots/couchkin-app-quick-picks.png) | Pick your company: Pip, Riff, Miso, or Jinx. Actual packaged desktop app. |
-| 3 | [Customization](../output/screenshots/couchkin-app-creator.png) | Shape the look, personality, and backseat energy of your companion. Actual packaged desktop app. |
-| 4 | [Shared memories](../output/screenshots/shared-memories-desktop.png) | Review, add, or forget shared memories. Demonstration data shown. |
-| 5 | [Chat controls](../output/screenshots/twitch-chat-replies.png) | Optional Twitch replies with account identity and a cooldown. Simulated connection status shown. |
+| 1 | [Cover artwork](../output/imagegen/06-couchkin-cover.png) | A little friend on the couch, with big opinions about your next move. Original Couchkin brand illustration. |
+| 2 | [Quick picks](../output/screenshots/couchkin-app-quick-picks.png) | Pick your company: playful Pip, trash-talking Riff, chill Miso, or chaotic Jinx. Actual desktop app. |
+| 3 | [Character creator](../output/screenshots/couchkin-app-creator.png) | Make your companion your own: choose their look, name, and personality. Actual desktop app; scripted personality example shown. |
+| 4 | [Personality and voice](../output/screenshots/couchkin-app-personality.png) | Tune the banter: adjust talkativeness, backseat energy, spoiler preferences, and speaking voice. Actual desktop app. |
 
-The new [Couchkin cover](../output/imagegen/06-couchkin-cover.png) is an original 3:2 brand illustration suitable for a project cover; label it as artwork. The original [stream concept](../output/imagegen/01-stream-mockup.png) is 3:2, but it is a design illustration, not a working-stream screenshot. Use it only with that label; prefer real footage for the submission.
+A real gameplay screenshot showing Riff in the OBS overlay would be the strongest next addition. None of the current gallery images claims to show a live Twitch broadcast. Devpost allows up to 15 images, but four clear images are a useful starting set.
 
 ## Final preparation notes — do not paste into the form
 
