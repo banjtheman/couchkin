@@ -1,0 +1,23 @@
+node_modules/
+out/
+dist/
+release/
+coverage/
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+.couchkin/
+.codex/
+auth.json
+*credentials*.json
+*token*.json
+tmp/
+research/sidekick-steam-news-*.json
+
+
+# Private scratch notes; publish curated documentation instead.
+notes.txt

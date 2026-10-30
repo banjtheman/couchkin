@@ -1,0 +1,265 @@
+/* Hallmark · component: companion avatar · genre: playful · theme: Couchkin
+ * States: idle · thinking · happy · surprised · skeptical · speaking · small · reduced motion
+ * Character motion is the product: quiet breathing and glances indicate presence;
+ * reactions play once, while speech gestures last only as long as actual playback.
+ * Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
+ */
+.character-art.couchkin-character .character-body {
+  transform-origin: 160px 281px;
+  animation: ck-breathe 7.4s var(--ease-in-out) infinite;
+  animation-delay: var(--ck-idle-delay);
+}
+
+.character-art.couchkin-character .character-pose {
+  transform-origin: 160px 240px;
+  transition: transform 420ms var(--ease-out);
+}
+
+.character-art.couchkin-character .character-eyes {
+  transform-origin: 160px 167px;
+  animation: ck-glance 18s var(--ease-in-out) infinite;
+  animation-delay: var(--ck-idle-delay);
+}
+
+.character-art.couchkin-character .character-lids {
+  transform-origin: 160px 167px;
+  animation: ck-blink 9.7s var(--ease-in-out) infinite;
+  animation-delay: var(--ck-idle-delay);
+}
+
+.character-art.couchkin-character .character-face {
+  transition: transform 300ms var(--ease-out);
+}
+
+.character-art.couchkin-character .character-arms,
+.character-art.couchkin-character .orbit-stars {
+  animation: none;
+}
+
+.character-art.couchkin-character .character-arm-left {
+  transform-origin: 78px 217px;
+  transition: transform 300ms var(--ease-out);
+}
+
+.character-art.couchkin-character .character-arm-right {
+  transform-origin: 242px 217px;
+  transition: transform 300ms var(--ease-out);
+}
+
+.character-art.couchkin-character .character-antenna {
+  transform-origin: 156px 94px;
+}
+
+.character-art.couchkin-character.expression-thinking .character-pose {
+  transform: rotate(-3deg);
+}
+
+.character-art.couchkin-character.expression-thinking .character-face {
+  transform: translate(3px, -2px);
+}
+
+.character-art.couchkin-character.expression-thinking .character-arm-right {
+  transform: translate(-7px, -7px) rotate(-20deg);
+}
+
+.character-art.couchkin-character.expression-skeptical .character-pose {
+  transform: rotate(4deg);
+}
+
+.character-art.couchkin-character.expression-skeptical .character-face {
+  transform: translate(-2px, 0);
+}
+
+.character-art.couchkin-character.expression-skeptical .character-arm-left {
+  transform: rotate(14deg);
+}
+
+.character-art.couchkin-character.expression-happy .character-pose {
+  animation: ck-delight 650ms var(--ease-out) both;
+}
+
+.character-art.couchkin-character.expression-happy .character-arm-right {
+  animation: ck-wave 900ms var(--ease-in-out) both;
+}
+
+.character-art.couchkin-character.expression-happy .character-antenna {
+  animation: ck-antenna 650ms var(--ease-out) both;
+}
+
+.character-art.couchkin-character.expression-surprised .character-pose {
+  animation: ck-startle 500ms var(--ease-out) both;
+}
+
+.character-art.couchkin-character.expression-surprised .character-arm-left {
+  transform: translateY(-5px) rotate(24deg);
+}
+
+.character-art.couchkin-character.expression-surprised .character-arm-right {
+  transform: translateY(-5px) rotate(-24deg);
+}
+
+.character-art.couchkin-character:not(.expression-idle) .character-eyes,
+.character-art.couchkin-character.is-speaking .character-eyes {
+  animation: none;
+}
+
+.character-art.couchkin-character.is-speaking .character-mouth {
+  transform-origin: 160px 196px;
+  animation: ck-speak 620ms var(--ease-in-out) infinite;
+}
+
+.character-art.couchkin-character.is-speaking .character-arm-right {
+  animation: ck-talking-hand 3.1s var(--ease-in-out) infinite;
+}
+
+/* Thumbnail characters are a preview of a choice, not competing performers. */
+.character-art.couchkin-character.small .character-body,
+.character-art.couchkin-character.small .character-pose,
+.character-art.couchkin-character.small .character-eyes,
+.character-art.couchkin-character.small .character-lids,
+.character-art.couchkin-character.small .character-arm-right,
+.character-art.couchkin-character.small .character-antenna {
+  animation: none;
+}
+
+@keyframes ck-breathe {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  45% {
+    transform: translateY(-2px) scale(1.006, 1.012);
+  }
+}
+
+@keyframes ck-glance {
+  0%,
+  28%,
+  49%,
+  72%,
+  100% {
+    transform: translate(0, 0);
+  }
+  33%,
+  44% {
+    transform: translate(4px, -1px);
+  }
+  77%,
+  86% {
+    transform: translate(-2px, 0);
+  }
+}
+
+@keyframes ck-blink {
+  0%,
+  39%,
+  42%,
+  73%,
+  75%,
+  78%,
+  100% {
+    transform: scaleY(1);
+  }
+  40%,
+  41%,
+  74%,
+  77% {
+    transform: scaleY(0.08);
+  }
+}
+
+@keyframes ck-delight {
+  from {
+    transform: rotate(-3deg) translateY(-2px);
+  }
+  to {
+    transform: rotate(0) translateY(0);
+  }
+}
+
+@keyframes ck-wave {
+  0%,
+  100% {
+    transform: rotate(0);
+  }
+  30%,
+  70% {
+    transform: rotate(-26deg);
+  }
+  50% {
+    transform: rotate(-12deg);
+  }
+}
+
+@keyframes ck-antenna {
+  from {
+    transform: rotate(-8deg);
+  }
+  to {
+    transform: rotate(0);
+  }
+}
+
+@keyframes ck-startle {
+  from {
+    transform: translateY(-6px) scale(1.025);
+  }
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes ck-speak {
+  0%,
+  100% {
+    transform: scale(0.94, 0.32);
+  }
+  22% {
+    transform: scale(1, 0.92);
+  }
+  44% {
+    transform: scale(0.96, 0.5);
+  }
+  66% {
+    transform: scale(1.02, 1);
+  }
+  84% {
+    transform: scale(0.95, 0.4);
+  }
+}
+
+@keyframes ck-talking-hand {
+  0%,
+  44%,
+  100% {
+    transform: rotate(0);
+  }
+  16%,
+  30% {
+    transform: rotate(-12deg);
+  }
+  65%,
+  78% {
+    transform: rotate(-6deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .character-art.couchkin-character *,
+  .character-art.couchkin-character.small * {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .character-art.couchkin-character .character-body,
+  .character-art.couchkin-character .character-pose,
+  .character-art.couchkin-character .character-eyes,
+  .character-art.couchkin-character .character-lids,
+  .character-art.couchkin-character .character-face,
+  .character-art.couchkin-character .character-arm-left,
+  .character-art.couchkin-character .character-arm-right,
+  .character-art.couchkin-character .character-antenna,
+  .character-art.couchkin-character .character-mouth {
+    transform: none;
+  }
+}

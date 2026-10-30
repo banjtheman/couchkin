@@ -1,0 +1,15 @@
+# Shared memories
+
+**Shared memories → Remember shared moments** enables automatic saving of a few game preferences and shared moments confirmed by the streamer. It is on by default. Turning it off stops new automatic checks; existing notes remain available to the companion. The same page lets you add a note yourself, forget individual entries, or clear all notes. Manual notes work while automatic saving is off.
+
+In Live mode, a separate Responses request reviews settled direct conversation after a six-second gap. Requests start at least 45 seconds apart, with one in flight. Voice replies and screen capture do not wait for memory processing. Each request can propose at most two notes of up to 300 characters; Couchkin keeps the newest 40. Case and whitespace duplicates are rejected, and already-reviewed streamer text cannot become fresh evidence just because another turn arrives.
+
+Only direct streamer text/transcripts and companion dialogue from the current run enter the extraction buffer. Twitch messages, screenshots, web pages and old sessions do not. A candidate must quote an exact supplied streamer message; companion claims alone cannot establish a memory. The extraction task excludes temporary game state, predictions, private personal information and credentials. Obvious private-data patterns are filtered locally as a second check. These controls reduce errors; they do not prove that a model can never misunderstand a quote. Review the notes and forget anything inaccurate.
+
+An explicit **Pause session** can finish an eligible final batch in the background, respecting the 45-second spacing. Leave the app open until the saving status finishes. Quiet, connection loss, game/character changes, switching voice mode and quitting cancel pending work instead of launching a final request. Turning remembering off, deleting, or clearing also invalidates pending suggestions and their buffered source messages. Previously deleted notes cannot be restored by that old work; a new conversation can establish the same fact again.
+
+New saved notes are sent to the active voice session as quiet context after local persistence succeeds. The companion can also read them through `get_stream_context`. It has no direct save tool and is instructed not to claim a save until the application confirms one. Memories are reference facts, not privileged instructions.
+
+Notes live in the existing private application settings outside the repository. The background request uses `gpt-6-luna`, `store:false`, strict structured output, no tools, a 15-second timeout and bounded input/output. It uses the configured OpenAI API account; its token usage is included in the session's reasoning total. Errors appear in the memories panel and do not disconnect voice. There is no automatic retry without new eligible dialogue. The earlier Codex mode retains its direct-streamer-turn memory path and respects the same remembering preference.
+
+This addition does not reconstruct prior sessions: their full conversations were not saved as a transcript archive.
