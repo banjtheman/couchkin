@@ -8,6 +8,8 @@ Built with OpenAI Codex for the **Codex × TwitchCon Hackathon**. This is an ind
 
 **Current status:** Desktop prototype tested on Apple Silicon macOS; 358 tests passing; real voice, OBS, memories, and Twitch sign-in exercised. The first outgoing Twitch reply and final broadcast mix still need a combined rehearsal.
 
+## Quick Start
+
 **Want Codex to set it up? [Copy this setup prompt](docs/codex-setup-prompt.md).**
 
 ![Couchkin's ready-made companions in the desktop app](output/screenshots/couchkin-app-quick-picks.png)
