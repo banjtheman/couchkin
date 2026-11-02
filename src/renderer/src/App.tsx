@@ -56,6 +56,7 @@ import CompanionQuickPicks from './CompanionQuickPicks';
 import { useLocalMicrophone } from '../useLocalMicrophone';
 import { useLiveMicrophone } from '../useLiveMicrophone';
 import { useMicrophoneInputs } from '../useMicrophoneInputs';
+import { useSessionMicrophone } from '../useSessionMicrophone';
 import { PcmPlayer } from '../liveAudio';
 
 type Page = 'companion' | 'session' | 'memories' | 'connections';
@@ -186,11 +187,20 @@ export default function App() {
 }
 
 function Desktop() {
-  const { state, request, pending, error, setError } = useCouchkin();
+  const { state, request: sendRequest, pending, error, setError } = useCouchkin();
   useDesktopAudio(setError);
   const usesLive = state.settings.voiceProvider === 'live';
   const conversationConnection = usesLive ? state.live : state.codex;
   const [page, setPage] = useState<Page>('companion');
+  const showSession = useCallback(() => setPage('session'), []);
+  const sessionMicrophone = useSessionMicrophone({
+    liveVoice: usesLive,
+    sessionActive: state.session.status === 'live',
+    onSessionPage: page === 'session',
+    request: sendRequest,
+    showSession,
+  });
+  const request = sessionMicrophone.request;
   const [customizing, setCustomizing] = useState(false);
   const focusMicrophone = useRef(false);
   useEffect(() => {
@@ -226,7 +236,7 @@ function Desktop() {
   };
   const start = async () => {
     if (unsaved && !(await save())) return;
-    if (await request({ type: 'start-session' })) setPage('session');
+    await request({ type: 'start-session' });
   };
   return (
     <div className="app-shell">
@@ -328,7 +338,13 @@ function Desktop() {
                 onClick={() => void start()}
               >
                 <Play size={15} />
-                {state.session.status === 'paused' ? 'Resume session' : 'Start session'}
+                {state.session.status === 'paused'
+                  ? usesLive
+                    ? 'Resume with mic'
+                    : 'Resume session'
+                  : usesLive
+                    ? 'Start with mic'
+                    : 'Start session'}
               </button>
             )}
           </div>
@@ -739,6 +755,8 @@ function Desktop() {
               request={request}
               pending={pending}
               goConnections={() => setPage('connections')}
+              micRequested={sessionMicrophone.requested}
+              setMicRequested={sessionMicrophone.setRequested}
             />
           )}
           {page === 'memories' && <Memories state={state} request={request} pending={pending} />}
@@ -872,8 +890,15 @@ function useDesktopAudio(onError: (message: string) => void) {
   }, [onError]);
 }
 
-function LiveMicrophone({ state }: { state: AppState }) {
-  const [requested, setRequested] = useState(false);
+function LiveMicrophone({
+  state,
+  requested,
+  setRequested,
+}: {
+  state: AppState;
+  requested: boolean;
+  setRequested: (requested: boolean) => void;
+}) {
   const inputs = useMicrophoneInputs();
   const canListen =
     state.capabilities.desktop &&
@@ -890,13 +915,12 @@ function LiveMicrophone({ state }: { state: AppState }) {
     if (mic.status === 'listening') void refreshInputs();
   }, [mic.status, refreshInputs]);
   useEffect(() => {
-    if (!canListen) setRequested(false);
-  }, [canListen]);
-  useEffect(() => {
     window.couchkin?.liveMicrophone(mic.status === 'listening');
     return () => window.couchkin?.liveMicrophone(false);
   }, [mic.status]);
   const listening = mic.status === 'listening';
+  const waitingForVoice = requested && !canListen && state.session.status === 'live';
+  const missingInput = inputs.selectedMissing && inputs.enumerated;
   return (
     <div
       id="live-microphone-settings"
@@ -928,93 +952,81 @@ function LiveMicrophone({ state }: { state: AppState }) {
           </select>
         </label>
         <button
-          className="button compact secondary"
+          className="button compact secondary microphone-refresh"
           disabled={inputs.loading}
           onClick={() => void inputs.refresh()}
+          aria-label="Refresh microphone inputs"
+          title="Refresh microphone inputs"
         >
-          <RefreshCw size={15} className={inputs.loading ? 'spin' : undefined} />
-          {inputs.loading ? 'Refreshing…' : 'Refresh inputs'}
+          <RefreshCw size={16} className={inputs.loading ? 'spin' : undefined} />
         </button>
+        <button
+          className="button compact secondary microphone-toggle"
+          disabled={!canListen && !requested}
+          onClick={() => setRequested(mic.status === 'error' ? false : !requested)}
+        >
+          {mic.status === 'requesting' ? (
+            <LoaderCircle size={16} className="spin" />
+          ) : requested ? (
+            <MicOff size={16} />
+          ) : (
+            <Mic size={16} />
+          )}
+          {mic.status === 'requesting'
+            ? 'Cancel mic setup'
+            : mic.status === 'error'
+              ? 'Reset mic'
+              : requested
+                ? 'Mute mic'
+                : 'Turn mic on'}
+        </button>
+        <div className="microphone-signal" aria-live="polite">
+          <span className={listening ? 'recording-label' : 'microphone-signal-label'}>
+            {listening && <span className="status-dot" />}
+            {listening
+              ? 'Listening'
+              : mic.status === 'requesting'
+                ? 'Opening microphone…'
+                : mic.status === 'error'
+                  ? 'Mic needs attention'
+                  : waitingForVoice
+                    ? 'Mic will resume with voice'
+                    : canListen
+                      ? 'Mic muted'
+                      : 'Mic starts with the session'}
+          </span>
+          <meter
+            className="mic-level"
+            min={0}
+            max={1}
+            value={listening ? mic.level : 0}
+            aria-label="Microphone level"
+          />
+        </div>
       </div>
       <p id="microphone-input-help" className="microphone-input-help">
-        {inputs.selectedMissing && inputs.enumerated
-          ? 'Your saved microphone isn’t listed. Reconnect it or allow microphone access, then refresh. Couchkin will not switch to another input automatically.'
-          : inputs.inputs.length === 0 || inputs.inputs.some((input) => !input.label)
-            ? 'If inputs are missing or unnamed, allow microphone access in Connections, then refresh. Refreshing does not turn your mic on.'
-            : 'Choose the mic Couchkin should hear. This is separate from the microphone selected in OBS.'}{' '}
-        {!inputs.savedLocally && 'This choice could not be saved on this Mac.'}
+        {missingInput
+          ? 'Your saved mic isn’t listed. Reconnect it or choose another input, then refresh.'
+          : listening
+            ? `Using ${mic.deviceLabel || 'your selected input'}. Audio goes to OpenAI while listening. Use headphones.`
+            : waitingForVoice
+              ? 'Your selected mic will reconnect automatically. You can mute it here at any time.'
+              : mic.status === 'requesting'
+                ? 'Allow microphone access if prompted. You can cancel setup above.'
+                : 'Start or resume turns your mic on. Mute mic keeps the conversation running.'}{' '}
+        {!inputs.savedLocally && 'This input choice could not be saved on this Mac.'}
       </p>
       {inputs.error && (
         <p className="microphone-input-error" role="status">
           {inputs.error}
         </p>
       )}
-      <div className="microphone-row">
-        <button
-          className="button compact secondary"
-          disabled={!canListen}
-          onClick={() => setRequested(mic.status === 'error' ? false : !requested)}
-        >
-          {mic.status === 'requesting' ? (
-            <LoaderCircle size={15} className="spin" />
-          ) : listening ? (
-            <MicOff size={15} />
-          ) : (
-            <Mic size={15} />
-          )}
-          {mic.status === 'requesting'
-            ? 'Cancel microphone setup'
-            : mic.status === 'error'
-              ? 'Reset microphone setup'
-              : requested
-                ? 'Turn mic off'
-                : 'Enable live mic'}
-        </button>
-        {listening && (
-          <span className="recording-label">
-            <span className="status-dot" />
-            Listening live
-          </span>
-        )}
-      </div>
-      {listening && (
-        <div className="microphone-active-input">
-          <p>
-            <strong>Using: {mic.deviceLabel || 'Audio input (name unavailable)'}</strong>
-          </p>
-          <meter
-            className="mic-level"
-            min={0}
-            max={1}
-            value={mic.level}
-            aria-label="Microphone level"
-          />
-          <p>Say a few words and watch the level move to check this input.</p>
-        </div>
-      )}
-      {mic.error ? (
+      {mic.error && (
         <div className="microphone-error" role="alert">
           <strong>Microphone unavailable</strong>
           <p>{mic.error}</p>
-          {canListen && (
-            <p>
-              Your live session is still connected. You can keep typing, or reset microphone setup
-              and enable it again.
-            </p>
-          )}
+          {canListen && <p>You can keep typing, or reset the mic and turn it on again.</p>}
         </div>
-      ) : (
-        <p aria-live="polite">
-          {mic.status === 'requesting'
-            ? 'Waiting for microphone access. You can cancel setup at any time.'
-            : listening
-              ? `Your mic audio goes to OpenAI while this is on. Use headphones so ${state.character.name} does not hear their own voice.`
-              : state.session.status !== 'live'
-                ? `Start a session, then turn on your mic to talk naturally with ${state.character.name}.`
-                : state.live.state !== 'connected'
-                  ? 'Connect live voice before enabling the microphone.'
-                  : 'Mic is off. Enable it to send live audio to OpenAI. Pause or leave this page to stop listening.'}
-        </p>
       )}
     </div>
   );
@@ -1097,11 +1109,15 @@ function Session({
   request,
   pending,
   goConnections,
+  micRequested,
+  setMicRequested,
 }: {
   state: AppState;
   request: Request;
   pending: string;
   goConnections: () => void;
+  micRequested: boolean;
+  setMicRequested: (requested: boolean) => void;
 }) {
   const [text, setText] = useState('');
   const [gameTitle, setGameTitle] = useState(state.settings.gameTitle);
@@ -1181,7 +1197,7 @@ function Session({
             {!liveActive && !liveConnecting && (
               <p className="live-session-next-step">
                 {state.capabilities.liveVoice
-                  ? 'Start or resume when you’re ready. Then enable your mic to talk.'
+                  ? 'Start or resume to connect voice and turn on your selected mic. This does not start your OBS stream.'
                   : 'Set up your OpenAI API key in Connections to use live voice.'}
               </p>
             )}
@@ -1199,13 +1215,14 @@ function Session({
               {state.capabilities.liveVoice ? <Play size={15} /> : <Plug size={15} />}
               {state.capabilities.liveVoice
                 ? state.session.status === 'paused'
-                  ? 'Resume session'
+                  ? 'Resume with mic'
                   : liveProblem
-                    ? 'Try live voice again'
-                    : 'Start session'
+                    ? 'Reconnect with mic'
+                    : 'Start with mic'
                 : 'Open Connections'}
             </button>
           )}
+          <LiveMicrophone state={state} requested={micRequested} setRequested={setMicRequested} />
         </section>
       )}
       <div className="session-layout">
@@ -1472,11 +1489,7 @@ function Session({
               </button>
             </div>
           </form>
-          {usesLive ? (
-            <LiveMicrophone state={state} />
-          ) : (
-            <Microphone request={request} desktop={state.capabilities.desktop} />
-          )}
+          {!usesLive && <Microphone request={request} desktop={state.capabilities.desktop} />}
           <p className="conversation-footer">
             {usesLive
               ? 'OpenAI live voice · API usage billed separately'
@@ -1926,8 +1939,8 @@ function Connections({
                 change the microphone Couchkin uses. You can choose it before starting a session.
               </p>
               <p className="connection-detail">
-                Leaving On the couch turns your live mic off. When you return, use Enable live mic
-                to start listening again.
+                Starting or resuming a session turns on your selected mic. Leaving On the couch
+                turns it off; use Turn mic on when you return.
               </p>
               <button className="text-button" onClick={goMicrophone}>
                 Choose microphone <ArrowRight size={15} />

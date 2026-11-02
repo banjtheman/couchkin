@@ -695,7 +695,7 @@ describe('Live controller lifecycle and context', () => {
     expect(live.connect).toHaveBeenCalledTimes(1);
   });
 
-  it('pauses on a Live failure instead of automatically opening another paid session', async () => {
+  it('pauses on an unknown Live failure instead of automatically opening another paid session', async () => {
     vi.useFakeTimers();
     const { controller, live } = await make();
     controller.state.settings.autoObserve = true;
@@ -711,6 +711,196 @@ describe('Live controller lifecycle and context', () => {
     expect(controls.capture).not.toHaveBeenCalled();
     expect(live.connect).toHaveBeenCalledTimes(1);
     expect(live.close).not.toHaveBeenCalled();
+  });
+
+  function loseConnection(live: any) {
+    live.connected = false;
+    live.emit('status', {
+      state: 'disconnected',
+      code: 'connection_lost',
+      closeCode: 1006,
+      intentional: false,
+      message: 'Connection lost.',
+    });
+  }
+
+  it('recovers a dropped connection without replaying audio or letting chat bypass backoff', async () => {
+    vi.useFakeTimers();
+    const { controller, live, twitch, overlay } = await make();
+    controller.state.settings.autoObserve = true;
+    await controller.request({ type: 'start-session' });
+    controller.liveMicrophone(true);
+    controller.appendLiveAudio(Buffer.alloc(960, 7).toString('base64'));
+    controller.state.frameUrl = fixtureImage;
+    loseConnection(live);
+    expect(controller.state.session.status).toBe('live');
+    expect(controller.state.live).toMatchObject({
+      state: 'connecting',
+      message: 'Reconnecting voice (1/3)…',
+    });
+    expect(controller.state.frameUrl).toBeNull();
+    expect(overlay.quiet).toHaveBeenCalled();
+    twitch.listener({ id: 'during-drop', user: 'viewer', text: 'Pip, say hi' });
+    const typed = await controller.request({ type: 'send-message', text: 'Hello?' });
+    expect(typed.ok).toBe(false);
+    expect(controller.state.messages.some((message) => message.text === 'Hello?')).toBe(false);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(live.connect).toHaveBeenCalledTimes(1);
+    expect(live.sendText).not.toHaveBeenCalled();
+    expect(controls.capture).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(live.connect).toHaveBeenCalledTimes(2);
+    expect(controller.state.live.state).toBe('connected');
+    expect(controller.state.session.status).toBe('live');
+    expect(controller.state.notice).toBeNull();
+    // Renderer must explicitly re-enable the mic; the old queue is gone.
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Buffer.from(live.appendAudio.mock.calls.at(-1)[0], 'base64')).toEqual(Buffer.alloc(960));
+    controller.liveMicrophone(true);
+    controller.appendLiveAudio(Buffer.alloc(960, 2).toString('base64'));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Buffer.from(live.appendAudio.mock.calls.at(-1)[0], 'base64')).toEqual(
+      Buffer.alloc(960, 2),
+    );
+  });
+
+  it('bounds rapid reconnect flapping and resets the budget on explicit Resume', async () => {
+    vi.useFakeTimers();
+    const { controller, live } = await make();
+    controller.state.settings.autoObserve = false;
+    await controller.request({ type: 'start-session' });
+    for (const delay of [1000, 3000, 7000]) {
+      const before = live.connect.mock.calls.length;
+      loseConnection(live);
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(live.connect).toHaveBeenCalledTimes(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(live.connect).toHaveBeenCalledTimes(before + 1);
+    }
+    loseConnection(live);
+    expect(controller.state.session.status).toBe('paused');
+    expect(controller.state.live.message).toContain('after 3 retries');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(live.connect).toHaveBeenCalledTimes(4);
+    await controller.request({ type: 'start-session' });
+    loseConnection(live);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(live.connect).toHaveBeenCalledTimes(6);
+  });
+
+  it('allows a fresh retry budget after a stable minute', async () => {
+    vi.useFakeTimers();
+    const { controller, live } = await make();
+    controller.state.settings.autoObserve = false;
+    await controller.request({ type: 'start-session' });
+    loseConnection(live);
+    await vi.advanceTimersByTimeAsync(1000);
+    vi.setSystemTime(Date.now() + 60_000);
+    loseConnection(live);
+    expect(controller.state.live.message).toBe('Reconnecting voice (1/3)…');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(live.connect).toHaveBeenCalledTimes(3);
+  });
+
+  it('bounds failed reconnection handshakes without an unhandled rejection', async () => {
+    vi.useFakeTimers();
+    const { controller, live } = await make();
+    controller.state.settings.autoObserve = false;
+    await controller.request({ type: 'start-session' });
+    live.connect.mockImplementation(async () => {
+      live.emit('status', { state: 'connecting', message: 'Connecting' });
+      live.emit('status', {
+        state: 'error',
+        code: 'connection_failed',
+        message: 'Network unavailable.',
+        intentional: false,
+      });
+      throw new Error('Network unavailable.');
+    });
+    loseConnection(live);
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(live.connect).toHaveBeenCalledTimes(4);
+    expect(controller.state.session.status).toBe('paused');
+    expect(controller.state.live.message).toContain('after 3 retries');
+  });
+
+  it.each([
+    'pause-session',
+    'quiet',
+    'disconnect-live',
+    'settings',
+    'character',
+    'obs',
+    'overlay',
+    'dispose',
+  ])('cancels backoff on %s and cannot be revived by an observation tick', async (action) => {
+    vi.useFakeTimers();
+    const { controller, live } = await make();
+    await controller.request({ type: 'start-session' });
+    loseConnection(live);
+    if (action === 'settings')
+      await controller.request({ type: 'save-settings', settings: { gameTitle: 'Another game' } });
+    else if (action === 'character')
+      await controller.request({
+        type: 'save-character',
+        character: { ...controller.state.character, name: 'Riff' },
+      });
+    else if (action === 'obs') await controller.obs.disconnect();
+    else if (action === 'overlay') {
+      controller.ownerLost();
+      controller.ownerReady();
+    } else if (action === 'dispose') await controller.dispose();
+    else await controller.request({ type: action });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(live.connect).toHaveBeenCalledTimes(1);
+    expect(controller.state.session.status).toBe('paused');
+    expect(controls.capture).not.toHaveBeenCalled();
+  });
+
+  it('cancels an automatic handshake when the user pauses', async () => {
+    vi.useFakeTimers();
+    const { controller, live } = await make();
+    await controller.request({ type: 'start-session' });
+    const gate = deferred<void>();
+    live.connect.mockImplementationOnce(async () => {
+      live.emit('status', { state: 'connecting', message: 'Connecting' });
+      await gate.promise;
+      live.connected = true;
+      live.emit('status', { state: 'connected', message: 'Connected' });
+    });
+    loseConnection(live);
+    await vi.advanceTimersByTimeAsync(1000);
+    await controller.request({ type: 'pause-session' });
+    gate.resolve();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(live.connected).toBe(false);
+    expect(controller.state.session.status).toBe('paused');
+    expect(live.connect).toHaveBeenCalledTimes(2);
+    expect(live.appendAudio).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'invalid_api_key',
+    'insufficient_quota',
+    'rate_limit_exceeded',
+    'content',
+    'expired',
+    'responses_validation_failed',
+  ])('does not retry a non-network stop (%s)', async (code) => {
+    vi.useFakeTimers();
+    const { controller, live } = await make();
+    await controller.request({ type: 'start-session' });
+    live.connected = false;
+    live.emit('status', {
+      state: 'disconnected',
+      code,
+      intentional: false,
+      message: 'Action required.',
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(live.connect).toHaveBeenCalledTimes(1);
+    expect(controller.state.session.status).toBe('paused');
+    expect(controller.state.live.message).toBe('Action required.');
   });
 
   it('pauses immediately on OBS overlay loss so chat cannot reopen a closing session', async () => {
