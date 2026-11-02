@@ -335,8 +335,10 @@ describe('authenticated Twitch replies', () => {
     });
   }
   async function connected(bridge: TwitchBridge) {
+    const previousSockets = sockets.instances.length;
     const ready = bridge.connect(credentials);
-    const socket = await nextSocket();
+    await vi.waitFor(() => expect(sockets.instances.length).toBeGreaterThan(previousSockets));
+    const socket = sockets.instances.at(-1)!;
     socket.readyState = 1;
     socket.emit('open');
     socket.emit(
@@ -403,26 +405,148 @@ describe('authenticated Twitch replies', () => {
     expect(bridge.chatAccess.canSend).toBe(false);
   });
 
-  it('ignores own messages even before the send response arrives', async () => {
+  function incoming(
+    socket: Awaited<ReturnType<typeof connected>>,
+    id: string,
+    user: string,
+    text: string,
+  ) {
+    socket.emit(
+      'message',
+      Buffer.from(
+        `@id=${id};display-name=${user} :${user}!${user}@host PRIVMSG #couchkin :${text}\r\n`,
+      ),
+    );
+  }
+
+  it('receives real broadcaster chat from the account also used for automated replies', async () => {
     mockAccount();
     const bridge = new TwitchBridge();
     const receive = vi.fn();
     bridge.onMessage(receive);
     const socket = await connected(bridge);
-    socket.emit(
-      'message',
-      Buffer.from(
-        '@id=echo;display-name=Riff :streamer!streamer@host PRIVMSG #couchkin :Riff, hello\r\n',
-      ),
+    incoming(socket, 'real-own', 'streamer', 'Riff, hello');
+    incoming(socket, 'real-viewer', 'viewer', 'Riff, hello');
+    expect(receive.mock.calls.map(([message]) => message.id)).toEqual(['real-own', 'real-viewer']);
+    bridge.disconnect();
+  });
+
+  it('suppresses only the actual reply echo before its send response arrives', async () => {
+    mockAccount();
+    const bridge = new TwitchBridge();
+    const receive = vi.fn();
+    bridge.onMessage(receive);
+    const socket = await connected(bridge);
+    let finish!: (value: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
     );
-    socket.emit(
-      'message',
-      Buffer.from(
-        '@id=real;display-name=Streamer :viewer!viewer@host PRIVMSG #couchkin :Riff, hello\r\n',
-      ),
-    );
-    expect(receive).toHaveBeenCalledTimes(1);
-    expect(receive.mock.calls[0]?.[0].id).toBe('real');
+    const sending = bridge.sendReply({
+      text: 'Riff: That play was ambitious.',
+      replyToId: 'viewer-1',
+    });
+    incoming(socket, 'human-own', 'streamer', 'Riff, what is chat saying?');
+    incoming(socket, 'other-same-text', 'viewer', 'Riff: That play was ambitious.');
+    incoming(socket, 'echo', 'streamer', 'Riff: That play was ambitious.');
+    incoming(socket, 'echo', 'streamer', 'Riff: That play was ambitious.');
+    // Once the one matching echo is consumed, different message IDs remain real chat.
+    incoming(socket, 'human-repeat', 'streamer', 'Riff: That play was ambitious.');
+    finish(Response.json({ data: [{ is_sent: true, message_id: 'echo' }] }));
+    await sending;
+    expect(receive.mock.calls.map(([message]) => message.id)).toEqual([
+      'human-own',
+      'other-same-text',
+      'human-repeat',
+    ]);
+    bridge.disconnect();
+  });
+
+  it('uses confirmed reply IDs without hiding later broadcaster text matches', async () => {
+    mockAccount();
+    const bridge = new TwitchBridge();
+    const receive = vi.fn();
+    bridge.onMessage(receive);
+    const socket = await connected(bridge);
+    await bridge.sendReply({ text: 'Riff: Hello.', replyToId: 'viewer-1' });
+    incoming(socket, 'sent-1', 'streamer', 'Riff: Hello.');
+    incoming(socket, 'human-repeat', 'streamer', 'Riff: Hello.');
+    expect(receive.mock.calls.map(([message]) => message.id)).toEqual(['human-repeat']);
+    bridge.disconnect();
+  });
+
+  it('bounds the time an uncertain send can suppress its own delayed echo', async () => {
+    vi.useFakeTimers();
+    mockAccount();
+    const bridge = new TwitchBridge();
+    const receive = vi.fn();
+    bridge.onMessage(receive);
+    const socket = await connected(bridge);
+    fetchMock.mockRejectedValueOnce(new Error('network failure'));
+    await expect(
+      bridge.sendReply({ text: 'Riff: Uncertain delivery.', replyToId: 'viewer-1' }),
+    ).rejects.toThrow('did not confirm');
+    incoming(socket, 'late-echo', 'streamer', 'Riff: Uncertain delivery.');
+    expect(receive).not.toHaveBeenCalled();
+    fetchMock.mockRejectedValueOnce(new Error('network failure'));
+    await expect(
+      bridge.sendReply({ text: 'Riff: Another uncertain delivery.', replyToId: 'viewer-1' }),
+    ).rejects.toThrow();
+    vi.setSystemTime(Date.now() + 60_001);
+    incoming(socket, 'human-later', 'streamer', 'Riff: Another uncertain delivery.');
+    expect(receive.mock.calls.map(([message]) => message.id)).toEqual(['human-later']);
+    bridge.disconnect();
+  });
+
+  it('does not retain text suppression for a reply Twitch explicitly rejected', async () => {
+    mockAccount();
+    const bridge = new TwitchBridge();
+    const receive = vi.fn();
+    bridge.onMessage(receive);
+    const socket = await connected(bridge);
+    fetchMock.mockResolvedValueOnce(Response.json({ data: [{ is_sent: false, message_id: '' }] }));
+    await expect(
+      bridge.sendReply({ text: 'Riff: Rejected.', replyToId: 'viewer-1' }),
+    ).rejects.toThrow();
+    incoming(socket, 'human-after-rejection', 'streamer', 'Riff: Rejected.');
+    expect(receive.mock.calls.map(([message]) => message.id)).toEqual(['human-after-rejection']);
+    bridge.disconnect();
+  });
+
+  it('clears uncertain echo suppression when explicitly reconnecting an account', async () => {
+    mockAccount();
+    const bridge = new TwitchBridge();
+    const receive = vi.fn();
+    bridge.onMessage(receive);
+    await connected(bridge);
+    fetchMock.mockRejectedValueOnce(new Error('network failure'));
+    await expect(
+      bridge.sendReply({ text: 'Riff: Earlier session.', replyToId: 'viewer-1' }),
+    ).rejects.toThrow();
+    bridge.disconnect();
+    const socket = await connected(bridge);
+    incoming(socket, 'new-session-human', 'streamer', 'Riff: Earlier session.');
+    expect(receive.mock.calls.map(([message]) => message.id)).toEqual(['new-session-human']);
+    bridge.disconnect();
+  });
+
+  it('caps uncertain reply matching instead of retaining unbounded prior text', async () => {
+    mockAccount();
+    const bridge = new TwitchBridge();
+    const receive = vi.fn();
+    bridge.onMessage(receive);
+    const socket = await connected(bridge);
+    for (let i = 0; i < 33; i++) {
+      fetchMock.mockRejectedValueOnce(new Error('network failure'));
+      await expect(
+        bridge.sendReply({ text: `Riff: Reply ${i}.`, replyToId: 'viewer-1' }),
+      ).rejects.toThrow();
+    }
+    incoming(socket, 'old-human', 'streamer', 'Riff: Reply 0.');
+    incoming(socket, 'recent-echo', 'streamer', 'Riff: Reply 32.');
+    expect(receive.mock.calls.map(([message]) => message.id)).toEqual(['old-human']);
     bridge.disconnect();
   });
 

@@ -61,7 +61,8 @@ vi.mock('../src/main/obs', () => ({
     }
   },
 }));
-vi.mock('../src/main/twitch', () => ({
+vi.mock('../src/main/twitch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/main/twitch')>()),
   TwitchBridge: class {
     async connect() {}
     disconnect() {}

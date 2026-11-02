@@ -1223,6 +1223,30 @@ function Session({
             </button>
           )}
           <LiveMicrophone state={state} requested={micRequested} setRequested={setMicRequested} />
+          <div
+            className={`session-chat-status ${state.twitch.state === 'connected' ? 'connected' : 'unavailable'}`}
+          >
+            <div role="status" aria-live="polite">
+              {state.twitch.state === 'connecting' ? (
+                <LoaderCircle size={16} className="spin" />
+              ) : (
+                <MessageSquare size={16} />
+              )}
+              <span>
+                {state.twitch.state === 'connected'
+                  ? `Chat connected${state.settings.twitchChannel ? ` · #${state.settings.twitchChannel.replace(/^#/, '')}` : ''}`
+                  : state.twitch.state === 'connecting'
+                    ? `Connecting chat · ${state.character.name} can’t read chat yet.`
+                    : `Chat disconnected · ${state.character.name} can’t read chat.`}
+              </span>
+            </div>
+            {state.twitch.state !== 'connected' && (
+              <button className="button compact secondary" onClick={goConnections}>
+                {state.twitch.state === 'connecting' ? 'Check chat connection' : 'Connect chat'}
+                <ArrowRight size={15} />
+              </button>
+            )}
+          </div>
         </section>
       )}
       <div className="session-layout">

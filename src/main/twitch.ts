@@ -8,6 +8,15 @@ const CONNECT_TIMEOUT_MS = 20_000;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const API_TIMEOUT_MS = 12_000;
 const VALIDATION_INTERVAL_MS = 60 * 60 * 1000;
+const REPLY_ECHO_WINDOW_MS = 60_000;
+const MAX_PENDING_REPLY_ECHOES = 32;
+
+interface PendingReplyEcho {
+  channel: string;
+  username: string;
+  text: string;
+  expiresAt: number;
+}
 
 interface TwitchIdentity {
   clientId: string;
@@ -158,6 +167,7 @@ export class TwitchBridge {
   private validationTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly requests = new Set<AbortController>();
   private sending: AbortController | null = null;
+  private readonly pendingReplyEchoes = new Set<PendingReplyEcho>();
   private readonly seen = new Set<string>();
   private readonly messages = new Set<(message: TwitchMessage) => void>();
   private readonly statuses = new Set<(connected: boolean, message: string) => void>();
@@ -311,6 +321,16 @@ export class TwitchBridge {
     this.sending = abort;
     const cancel = () => abort.abort();
     input.signal?.addEventListener('abort', cancel, { once: true });
+    this.pruneReplyEchoes();
+    const echo: PendingReplyEcho = {
+      channel: credentials.channel,
+      username: credentials.username,
+      text: input.text.trim(),
+      expiresAt: Date.now() + REPLY_ECHO_WINDOW_MS,
+    };
+    this.pendingReplyEchoes.add(echo);
+    while (this.pendingReplyEchoes.size > MAX_PENDING_REPLY_ECHOES)
+      this.pendingReplyEchoes.delete(this.pendingReplyEchoes.values().next().value!);
     try {
       const result = (await this.requestJson(
         'https://api.twitch.tv/helix/chat/messages',
@@ -340,14 +360,28 @@ export class TwitchBridge {
         !sent.message_id ||
         sent.message_id.length > 128
       ) {
+        if (sent?.is_sent === false) this.pendingReplyEchoes.delete(echo);
         throw new Error(
           'Twitch did not send this reply. Channel rules or moderation may have blocked it.',
         );
       }
+      // The confirmed ID is precise enough to identify later echoes; stop
+      // matching by text so a real broadcaster can repeat the same words.
+      this.pendingReplyEchoes.delete(echo);
       this.seen.add(sent.message_id);
       if (this.seen.size > 2000) this.seen.delete(this.seen.values().next().value!);
       return { messageId: sent.message_id };
     } catch (error) {
+      // A request failure may have delivered. Keep its one-use text match for
+      // a short window, except when Twitch explicitly rejected the send.
+      if (
+        error instanceof TwitchRequestError &&
+        error.statusCode !== undefined &&
+        error.statusCode >= 400 &&
+        error.statusCode < 500 &&
+        error.statusCode !== 408
+      )
+        this.pendingReplyEchoes.delete(echo);
       if (
         error instanceof TwitchRequestError &&
         error.statusCode === 401 &&
@@ -368,6 +402,28 @@ export class TwitchBridge {
       input.signal?.removeEventListener('abort', cancel);
       if (this.sending === abort) this.sending = null;
     }
+  }
+
+  private pruneReplyEchoes() {
+    for (const echo of this.pendingReplyEchoes)
+      if (echo.expiresAt <= Date.now()) this.pendingReplyEchoes.delete(echo);
+  }
+
+  private consumeReplyEcho(message: IrcMessage, credentials: TwitchCredentials): boolean {
+    this.pruneReplyEchoes();
+    const username = message.prefix.split('!')[0]?.toLowerCase();
+    if (!credentials.username || username !== credentials.username) return false;
+    for (const echo of this.pendingReplyEchoes) {
+      if (
+        echo.channel === credentials.channel &&
+        echo.username === username &&
+        echo.text === message.params[1]
+      ) {
+        this.pendingReplyEchoes.delete(echo);
+        return true;
+      }
+    }
+    return false;
   }
 
   onMessage(callback: (message: TwitchMessage) => void): () => void {
@@ -578,13 +634,13 @@ export class TwitchBridge {
             finish();
           }
           if (!joined) continue;
-          // Ignore the sending account, including echoes that arrive before Helix responds.
-          if (!guest && message.prefix.split('!')[0]?.toLowerCase() === credentials.username)
-            continue;
           const chat = ircChatMessage(message, channel);
           if (!chat || this.seen.has(chat.id)) continue;
           this.seen.add(chat.id);
           if (this.seen.size > 2000) this.seen.delete(this.seen.values().next().value!);
+          // The streamer can use the same account as Couchkin. Suppress only a
+          // known automated reply, including an echo arriving before Helix replies.
+          if (this.consumeReplyEcho(message, credentials)) continue;
           for (const callback of this.messages) callback(chat);
         }
         if (buffer.length > MAX_LINE) fail('Twitch sent an invalid message. Reconnect to chat.');
@@ -606,6 +662,7 @@ export class TwitchBridge {
   }
 
   disconnect(): void {
+    this.pendingReplyEchoes.clear();
     this.wanted = null;
     this.joined = false;
     this.identity = null;

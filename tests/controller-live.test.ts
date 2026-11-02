@@ -100,7 +100,8 @@ vi.mock('../src/main/obs', () => ({
     }
   },
 }));
-vi.mock('../src/main/twitch', () => ({
+vi.mock('../src/main/twitch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/main/twitch')>()),
   TwitchBridge: class {
     listener?: (message: { id: string; user: string; text: string }) => void;
     statusListener?: (connected: boolean, message: string) => void;
@@ -188,6 +189,98 @@ afterEach(async () => {
 });
 
 describe('Live controller lifecycle and context', () => {
+  it('keeps the connected channel and its evidence when invalid reconnect input is rejected', async () => {
+    const { controller, live, twitch } = await make();
+    await controller.request({
+      type: 'connect-twitch',
+      channel: 'valid_channel',
+      username: '',
+      token: '',
+    });
+    twitch.statusListener(true, 'Joined');
+    await controller.request({ type: 'start-session' });
+    twitch.listener({ id: 'real', user: 'viewer', text: 'Real current-channel words.' });
+    const rejected = await controller.request({
+      type: 'connect-twitch',
+      channel: 'not a channel',
+      username: '',
+      token: '',
+    });
+    expect(rejected.ok).toBe(false);
+    twitch.statusListener(true, 'Still joined');
+    live.emit('tool', { callId: 'chat', name: 'get_recent_chat', arguments: {} });
+    expect(live.submitToolResult.mock.calls.at(-1)[1]).toMatchObject({
+      connected: true,
+      channel: 'valid_channel',
+      status: 'messages',
+      messages: [{ text: 'Real current-channel words.' }],
+    });
+  });
+  it('reads real chat independently of long voice dialogue and never treats conversation as chat evidence', async () => {
+    const { controller, live, twitch } = await make();
+    await controller.request({
+      type: 'connect-twitch',
+      channel: 'test_channel',
+      username: '',
+      token: '',
+    });
+    twitch.statusListener(true, 'Joined');
+    await controller.request({ type: 'start-session' });
+    twitch.listener({ id: 'real', user: 'viewer', text: 'Try the poison card.' });
+    for (let i = 0; i < 30; i++)
+      controller.state.messages.push({
+        id: `voice-${i}`,
+        role: 'companion',
+        text: 'An unrelated spoken remark.',
+        at: Date.now(),
+      });
+    live.emit('tool', { callId: 'chat', name: 'get_recent_chat', arguments: {} });
+    expect(live.submitToolResult.mock.calls.at(-1)[1]).toMatchObject({
+      connected: true,
+      channel: 'test_channel',
+      status: 'messages',
+      messages: [
+        {
+          id: 'real',
+          user: 'viewer',
+          text: 'Try the poison card.',
+          receivedAt: expect.any(Number),
+        },
+      ],
+    });
+    live.emit('tool', { callId: 'context', name: 'get_stream_context', arguments: {} });
+    expect(live.submitToolResult.mock.calls.at(-1)[1].context.twitchChat.messages).toHaveLength(1);
+    twitch.statusListener(false, 'Disconnected');
+    live.emit('tool', { callId: 'offline', name: 'get_recent_chat', arguments: {} });
+    expect(live.submitToolResult.mock.calls.at(-1)[1]).toMatchObject({
+      connected: false,
+      status: 'disconnected',
+      messages: [],
+    });
+    expect(live.addContext.mock.calls.at(-1)[0]).toContain('disconnected; you cannot read chat');
+    twitch.statusListener(true, 'Rejoined');
+    live.emit('tool', { callId: 'empty', name: 'get_recent_chat', arguments: {} });
+    expect(live.submitToolResult.mock.calls.at(-1)[1]).toMatchObject({
+      connected: true,
+      status: 'waiting',
+      messages: [],
+    });
+  });
+
+  it('keeps stale viewer messages out of a replacement voice session history', async () => {
+    const { controller, live, twitch } = await make();
+    twitch.listener({ id: 'old-channel', user: 'viewer', text: 'Old viewer words.' });
+    await controller.request({ type: 'start-session' });
+    expect(live.connect.mock.calls.at(-1)[0].instructions).toContain(
+      'Twitch chat at connection start: disconnected',
+    );
+    expect(JSON.stringify(live.connect.mock.calls.at(-1)[0].history)).not.toContain(
+      'Old viewer words',
+    );
+    live.emit('tool', { callId: 'chat', name: 'get_recent_chat', arguments: {} });
+    expect(live.submitToolResult.mock.calls.at(-1)[1].messages).toEqual([]);
+  });
+
   it('saves settled direct Live dialogue with no chat/research/history in the extractor input', async () => {
     vi.useFakeTimers();
     const { controller, live, twitch } = await make();
@@ -1066,6 +1159,13 @@ describe('Live controller lifecycle and context', () => {
 
   it('makes Twitch context and confirmed memories available to the game tools', async () => {
     const { controller, live, twitch } = await make();
+    await controller.request({
+      type: 'connect-twitch',
+      channel: 'test_channel',
+      username: '',
+      token: '',
+    });
+    twitch.statusListener(true, 'Joined');
     controller.state.memories = [
       { id: 'memory_fixture', text: 'The streamer prefers spoiler-free hints.' },
     ];
@@ -1081,10 +1181,13 @@ describe('Live controller lifecycle and context', () => {
     expect(result[1].context.confirmedMemories).toEqual([
       'The streamer prefers spoiler-free hints.',
     ]);
-    expect(result[1].context.recentConversation).toContainEqual({
-      role: 'chat',
-      text: 'viewer: Our lucky word is pineapple.',
+    expect(result[1].context.twitchChat.messages).toContainEqual({
+      id: 'fixture-viewer-message',
+      user: 'viewer',
+      text: 'Our lucky word is pineapple.',
+      receivedAt: expect.any(Number),
     });
+    expect(result[1].context.recentConversation).toEqual([]);
     expect(live.addContext.mock.calls.at(-1)[0]).toContain('Untrusted Twitch viewer message');
     expect(JSON.stringify(result)).not.toContain(privateKey);
   });

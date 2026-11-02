@@ -1278,6 +1278,35 @@ svg {
 .live-session-status > .button {
   flex-shrink: 0;
 }
+.session-chat-status {
+  display: flex;
+  flex: 1 0 100%;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+  font-size: var(--text-sm);
+}
+.session-chat-status > [role='status'] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.session-chat-status > [role='status'] svg {
+  flex-shrink: 0;
+}
+.session-chat-status > [role='status'] span {
+  overflow-wrap: anywhere;
+}
+.session-chat-status.unavailable > [role='status'] {
+  color: var(--color-clay);
+}
+.session-chat-status.connected > [role='status'] {
+  color: var(--color-accent);
+}
 .session-main {
   display: grid;
   gap: 20px;

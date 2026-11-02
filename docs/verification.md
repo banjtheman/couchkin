@@ -106,3 +106,12 @@ Run `npm run check` for the deterministic tests and production build. Those chec
 The earlier protocol-server test also passed OBS v5 MessagePack negotiation, input enumeration, and JPEG delivery before the real OBS test. The earlier 20.2-second Marin sample was generated speech from an API smoke session, not a human microphone recording. Streaming and recording were inactive when the OBS audio check finished. Those legacy proof artifacts are retained privately rather than shipped with the source.
 
 Next checks: rehearse the new personalities across changing gameplay, extend sustained stability testing beyond the earlier failed run, and measure natural interruption, audible latency, echo behavior, and API usage. Verify the final broadcast mix separately. No public broadcast was used for these checks.
+
+
+## November 1: chat grounding and broadcaster messages
+
+The user reported invented chat summaries after a stream. Inspection found that the app had not rejoined Twitch after a restart, that its general context mixed only ten recent conversation/chat entries without connection status, and that the authenticated broadcaster’s messages were being filtered together with automatic reply echoes. These findings explain missing chat access; they do not establish the exact state when the recorded remark occurred.
+
+The reader now preserves real broadcaster messages while suppressing known automated reply echoes. A dedicated current-connection chat buffer supplies a new `get_recent_chat` tool, with explicit disconnected/empty states, timestamps, a five-minute window, and channel isolation. Live instructions require fresh tool evidence for chat questions. The session page displays chat availability next to the microphone.
+
+Validation: **399 deterministic tests**, TypeScript checking, and production build passed. A separate real API check used synthetic messages, without capturing microphone/game data or posting to Twitch. In both cases the model called `get_recent_chat`: disconnected returned “Can't read chat right now—the connection's down”; the two-message fixture was summarized accurately. Both sessions finalized usage with no faults. This is a limited grounding check, not a guarantee against future model errors or proof that Twitch messages missed before joining can be recovered.
