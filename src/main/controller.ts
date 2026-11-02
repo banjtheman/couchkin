@@ -118,6 +118,7 @@ export class Controller extends EventEmitter {
       binary: process.env.COUCHKIN_CODEX_BIN,
     });
     this.state.capabilities.liveVoice = Boolean(apiConfig.apiKey);
+    this.twitch.onDiagnostic((entry) => this.runtimeDiagnostics.record('twitch', entry));
     this.live.on('status', (status) => {
       const terminal = status.state !== 'connected' && status.state !== 'connecting';
       this.recordConnection(

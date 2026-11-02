@@ -10,6 +10,9 @@ const API_TIMEOUT_MS = 12_000;
 const VALIDATION_INTERVAL_MS = 60 * 60 * 1000;
 const REPLY_ECHO_WINDOW_MS = 60_000;
 const MAX_PENDING_REPLY_ECHOES = 32;
+const PROBE_INTERVAL_MS = 30_000;
+const PROBE_TIMEOUT_MS = 15_000;
+const MESSAGE_DIAGNOSTIC_INTERVAL_MS = 5_000;
 
 interface PendingReplyEcho {
   channel: string;
@@ -50,6 +53,27 @@ export interface TwitchCredentials {
   channel: string;
   username: string;
   token: string;
+}
+export interface TwitchTransportDiagnostic {
+  event:
+    | 'joined'
+    | 'probe_sent'
+    | 'probe_ack'
+    | 'probe_timeout'
+    | 'message_received'
+    | 'message_filtered'
+    | 'socket_closed'
+    | 'socket_error';
+  receivedFrames: number;
+  /** Parsed PRIVMSG commands, before routing and reply-echo filtering. */
+  parsedMessages: number;
+  acceptedMessages: number;
+  duplicateMessages: number;
+  echoMessages: number;
+  lastFrameAt: number | null;
+  /** Last chat message accepted for the application. */
+  lastMessageAt: number | null;
+  lastProbeAckAt: number | null;
 }
 
 export function decodeIrcTag(value: string): string {
@@ -171,6 +195,8 @@ export class TwitchBridge {
   private readonly seen = new Set<string>();
   private readonly messages = new Set<(message: TwitchMessage) => void>();
   private readonly statuses = new Set<(connected: boolean, message: string) => void>();
+  private readonly diagnostics = new Set<(diagnostic: TwitchTransportDiagnostic) => void>();
+  private cancelHeartbeat: (() => void) | null = null;
 
   get chatAccess(): { canSend: boolean; username: string | null } {
     return {
@@ -436,6 +462,12 @@ export class TwitchBridge {
       this.statuses.delete(callback);
     };
   }
+  onDiagnostic(callback: (diagnostic: TwitchTransportDiagnostic) => void): () => void {
+    this.diagnostics.add(callback);
+    return () => {
+      this.diagnostics.delete(callback);
+    };
+  }
   private status(connected: boolean, message: string): void {
     for (const callback of this.statuses) callback(connected, message);
   }
@@ -515,8 +547,8 @@ export class TwitchBridge {
   private connectAttempt(credentials: TwitchCredentials, retrying: boolean): Promise<void> {
     const { channel } = credentials;
     // Keep public-chat receiving separate from the authenticated Helix writer.
-    // Guest receiving passed the live broadcaster-message test where the signed-in
-    // reader missed messages. This is tested compatibility, not an OAuth entitlement.
+    // Guest access is tested compatibility, not a documented OAuth entitlement.
+    // Reader health is verified independently of the identity used for replies.
     const readerUsername = `justinfan${randomInt(10000, 100000000)}`;
     const socket = new WebSocket(TWITCH_IRC_URL, {
       maxPayload: MAX_BUFFER,
@@ -528,8 +560,55 @@ export class TwitchBridge {
     let authenticated = false;
     let joined = false;
     let closedReason = 'Twitch chat disconnected. Reconnect when ready.';
+    const diagnosticState: Omit<TwitchTransportDiagnostic, 'event'> = {
+      receivedFrames: 0,
+      parsedMessages: 0,
+      acceptedMessages: 0,
+      duplicateMessages: 0,
+      echoMessages: 0,
+      lastFrameAt: null,
+      lastMessageAt: null,
+      lastProbeAckAt: null,
+    };
+    const lastMessageDiagnosticAt: Partial<
+      Record<'message_received' | 'message_filtered', number>
+    > = {};
+    const diagnostic = (event: TwitchTransportDiagnostic['event']) => {
+      if (event === 'message_received' || event === 'message_filtered') {
+        const now = Date.now();
+        const previous = lastMessageDiagnosticAt[event];
+        // Keep the first receipt immediate without writing one diagnostic per
+        // chat message. Probe snapshots still include every cumulative count.
+        if (
+          previous !== undefined &&
+          now >= previous &&
+          now - previous < MESSAGE_DIAGNOSTIC_INTERVAL_MS
+        )
+          return;
+        lastMessageDiagnosticAt[event] = now;
+      }
+      for (const callback of this.diagnostics) {
+        try {
+          callback({ event, ...diagnosticState });
+        } catch {
+          /* Diagnostics must never interrupt the chat connection. */
+        }
+      }
+    };
     return new Promise<void>((resolve, reject) => {
       let settled = false;
+      let probeTimer: ReturnType<typeof setTimeout> | null = null;
+      let probeDeadline: ReturnType<typeof setTimeout> | null = null;
+      let pendingProbe: string | null = null;
+      const clearHeartbeat = () => {
+        if (probeTimer) clearTimeout(probeTimer);
+        if (probeDeadline) clearTimeout(probeDeadline);
+        probeTimer = null;
+        probeDeadline = null;
+        pendingProbe = null;
+        if (this.cancelHeartbeat === clearHeartbeat) this.cancelHeartbeat = null;
+      };
+      this.cancelHeartbeat = clearHeartbeat;
       const finish = (error?: string) => {
         if (settled) return;
         settled = true;
@@ -539,6 +618,7 @@ export class TwitchBridge {
         else resolve();
       };
       const fail = (message: string, recoverable = false) => {
+        clearHeartbeat();
         closedReason = message;
         finish(message);
         if (this.socket === socket) {
@@ -554,6 +634,29 @@ export class TwitchBridge {
           }
         }
         socket.terminate();
+      };
+      const probe = () => {
+        probeTimer = null;
+        if (this.socket !== socket || !joined || socket.readyState !== WebSocket.OPEN) return;
+        pendingProbe = `couchkin-health-${randomUUID()}`;
+        probeDeadline = setTimeout(() => {
+          if (this.socket !== socket || !pendingProbe) return;
+          diagnostic('probe_timeout');
+          fail('Twitch chat stopped responding. Reconnecting…', true);
+        }, PROBE_TIMEOUT_MS);
+        probeDeadline.unref?.();
+        diagnostic('probe_sent');
+        try {
+          socket.send(`PING :${pendingProbe}\r\n`, (error) => {
+            if (error && this.socket === socket) {
+              diagnostic('socket_error');
+              fail('Could not check Twitch chat. Reconnecting…', true);
+            }
+          });
+        } catch {
+          diagnostic('socket_error');
+          fail('Could not check Twitch chat. Reconnecting…', true);
+        }
       };
       const timer = setTimeout(
         () =>
@@ -574,6 +677,8 @@ export class TwitchBridge {
       });
       socket.on('message', (raw) => {
         if (this.socket !== socket) return;
+        diagnosticState.receivedFrames++;
+        diagnosticState.lastFrameAt = Date.now();
         buffer += raw.toString();
         if (buffer.length > MAX_BUFFER) {
           fail('Twitch sent an oversized response. Reconnect to chat.');
@@ -585,6 +690,20 @@ export class TwitchBridge {
           buffer = buffer.slice(boundary + 2);
           const message = parseIrcLine(line);
           if (!message) continue;
+          if (message.command === 'PONG') {
+            if (pendingProbe && message.params.at(-1) === pendingProbe) {
+              if (probeDeadline) clearTimeout(probeDeadline);
+              probeDeadline = null;
+              pendingProbe = null;
+              diagnosticState.lastProbeAckAt = Date.now();
+              // A JOIN alone cannot prove that the reader remains responsive.
+              this.reconnectAttempts = 0;
+              diagnostic('probe_ack');
+              probeTimer = setTimeout(probe, PROBE_INTERVAL_MS);
+              probeTimer.unref?.();
+            }
+            continue;
+          }
           if (message.command === 'PING') {
             if (socket.readyState === WebSocket.OPEN && message.params[0])
               socket.send(`PONG :${message.params[0]}\r\n`);
@@ -624,28 +743,49 @@ export class TwitchBridge {
           if (authenticated && !joined && (ownJoin || roomReady)) {
             joined = true;
             this.joined = true;
-            this.reconnectAttempts = 0;
             this.status(true, this.connectedMessage(credentials));
             finish();
+            diagnostic('joined');
+            probe();
           }
-          if (!joined) continue;
+          if (message.command !== 'PRIVMSG') continue;
+          diagnosticState.parsedMessages++;
           const chat = ircChatMessage(message, channel);
-          if (!chat || this.seen.has(chat.id)) continue;
+          if (!joined || !chat) {
+            diagnostic('message_filtered');
+            continue;
+          }
+          if (this.seen.has(chat.id)) {
+            diagnosticState.duplicateMessages++;
+            diagnostic('message_filtered');
+            continue;
+          }
           this.seen.add(chat.id);
           if (this.seen.size > 2000) this.seen.delete(this.seen.values().next().value!);
           // The streamer can use the same account as Couchkin. Suppress only a
           // known automated reply, including an echo arriving before Helix replies.
-          if (this.consumeReplyEcho(message, credentials)) continue;
+          if (this.consumeReplyEcho(message, credentials)) {
+            diagnosticState.echoMessages++;
+            diagnostic('message_filtered');
+            continue;
+          }
+          diagnosticState.acceptedMessages++;
+          diagnosticState.lastMessageAt = Date.now();
+          diagnostic('message_received');
           for (const callback of this.messages) callback(chat);
         }
         if (buffer.length > MAX_LINE) fail('Twitch sent an invalid message. Reconnect to chat.');
       });
-      socket.on('error', () =>
-        fail('Could not connect to Twitch chat. Check your network and connection settings.', true),
-      );
+      socket.on('error', () => {
+        if (this.socket !== socket) return;
+        diagnostic('socket_error');
+        fail('Could not connect to Twitch chat. Check your network and connection settings.', true);
+      });
       socket.on('close', () => {
+        clearHeartbeat();
         finish(closedReason);
         if (this.socket === socket) {
+          diagnostic('socket_closed');
           this.joined = false;
           this.sending?.abort();
           this.socket = null;
@@ -657,6 +797,8 @@ export class TwitchBridge {
   }
 
   disconnect(): void {
+    this.cancelHeartbeat?.();
+    this.cancelHeartbeat = null;
     this.pendingReplyEchoes.clear();
     this.wanted = null;
     this.joined = false;

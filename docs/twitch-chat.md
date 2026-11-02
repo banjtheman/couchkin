@@ -28,7 +28,7 @@ The device authorization uses Twitch's public-client flow. Tokens stay in memory
 - Spoken and text replies triggered by chat share one cooldown: **45 seconds by default**, configurable from **30 to 300 seconds**. One accepted viewer message may produce both a spoken answer and a text reply. There is no backlog: messages skipped while busy, paused, or cooling down are not replayed later.
 - Text uses the selected personality. The reply body is at most **280 characters**, with the companion's name added as a prefix, and is threaded under the viewer's message. The Twitch username remains the signed-in account shown in Connections.
 - Text generation uses a separate OpenAI Responses request with the game title, addressed viewer's words, character personality, and recent public replies. It does **not** receive private voice transcripts, saved memories, or the current game frame. It therefore should not claim to see a specific current play. This request has separate OpenAI API usage even when the spoken companion uses Codex.
-- Repeated reply text and duplicate incoming message IDs are suppressed. Messages from the sending account are ignored, including its own manually typed messages; use another viewer account for a chat-trigger test.
+- Repeated reply text, duplicate incoming message IDs, and echoes of Couchkin's own automated replies are suppressed. Manually typed broadcaster messages are included in chat history, even when the same account sends the companion's replies.
 - Pending work is cancelled when the session stops or the relevant connection/settings change. Replies are not retried after an uncertain network result, since Twitch might already have received them. “Sent” appears only after Twitch confirms delivery; moderation and channel restrictions can prevent a send. Turning the switch off cannot retract a message already submitted.
 
 When the channel participates in **Shared Chat**, Twitch sends user-token messages to all participating channels; this token type cannot restrict a send to the source channel. [Twitch's Shared Chat sending behavior](https://dev.twitch.tv/docs/api/reference/#send-chat-message).
@@ -37,7 +37,11 @@ A stream does not have to be broadcasting to test its chat. Test the authenticat
 
 ## Listening and recovery
 
-The IRC reader uses a guest transport identity, including when an account is signed in for replies. The account token remains in memory for identity validation and authenticated Helix posting; it is not used as the reader’s IRC login. This separates the tested receive path from the account that sends Riff’s messages. The IRC bridge requests message tags, handles PING/PONG, parses bounded buffers, and deduplicates message IDs. Established connections retry after interruptions or Twitch-requested reconnects at 1, 2, 4, 8, and 16 seconds. Five failed attempts stop recovery and request manual reconnection. Disconnect cancels pending retries. Messages missed while disconnected are not replayed.
+The IRC reader uses a guest transport identity, including when an account is signed in for replies. The account token remains in memory for identity validation and authenticated Helix posting; it is not used as the reader’s IRC login. The IRC bridge requests message tags, parses bounded buffers, and deduplicates message IDs.
+
+After joining, Couchkin sends an IRC health probe and requires the matching acknowledgment within 15 seconds. It checks again 30 seconds after each acknowledgment. A missed check triggers reconnection; an acknowledgment proves the transport is responding, not that chat messages were delivered. The session's receipt count remains the message-delivery check. Private, bounded diagnostics record probe results and message counts without message text, usernames, channel names, or tokens.
+
+Established connections retry after interruptions or Twitch-requested reconnects at 1, 2, 4, 8, and 16 seconds. Five failed attempts stop recovery and request manual reconnection; a successful probe resets this retry budget. Disconnect cancels pending retries and checks. Messages missed while disconnected are not replayed.
 
 On October 26, 2026, guest IRC joined the user's channel and actual Twitch messages reached both the earlier Codex and packaged Live voice paths. These were incoming-chat tests, not evidence of Couchkin sending text. See the [verification record](verification.md).
 
@@ -45,6 +49,6 @@ Guest access is not documented in Twitch's current authentication guide; it rema
 
 ## Regression checks
 
-`npm test -- tests/twitch.test.ts` covers parsing, guest listening, authenticated identity/scope checks, threaded API sends, confirmed versus dropped delivery, automated-reply echo suppression while preserving real broadcaster messages, invalid text, sanitized failures, cancellation, token revocation, and periodic validation. The 42 transport tests passed with local fixtures; they do not connect to Twitch or post messages.
+`npm test -- tests/twitch.test.ts` covers parsing, guest listening, authenticated identity/scope checks, threaded API sends, confirmed versus dropped delivery, automated-reply echo suppression while preserving real broadcaster messages, invalid text, sanitized failures, cancellation, token revocation, periodic validation, and health checks across idle or stalled connections. These tests use local fixtures; they do not connect to Twitch or post messages.
 
 Device sign-in and controller reply-policy checks are separate from transport tests. Run the full `npm run check` before packaging. Real authorization, posted-message appearance, moderation behavior, and cooldown behavior in an actual channel still require an end-to-end rehearsal.

@@ -103,6 +103,7 @@ vi.mock('../src/main/obs', () => ({
 vi.mock('../src/main/twitch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/main/twitch')>()),
   TwitchBridge: class {
+    onDiagnostic() { return () => {}; }
     listener?: (message: { id: string; user: string; text: string }) => void;
     statusListener?: (connected: boolean, message: string) => void;
     chatAccess = { canSend: false, username: null as string | null };

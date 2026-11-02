@@ -124,3 +124,11 @@ A controlled test after the chat-grounding update showed why connection status a
 The prototype now uses the tested guest IRC reader while keeping the signed-in account for authenticated Helix replies. The UI exposes received count, receipt time, and latest message preview. Message content stays in the existing in-memory app state; only the first-received transition is added to the private bounded connection log. A future EventSub reader remains the officially supported migration path described in the chat documentation.
 
 The integrated follow-up passed **400 tests**, TypeScript checking, and the production build. Transport coverage confirms that the guest reader never receives the account OAuth token, while Helix replies keep the validated account identity through reader reconnects.
+
+### Connection-health follow-up
+
+The next real history test still failed: two `get_recent_chat` calls returned `waiting`, and the app recorded no first-message receipt. The successful guest test had happened shortly after joining, while both failed tests happened several minutes after joining. This leaves the cause unresolved; it does not establish that changing the reader identity fixed delivery.
+
+The reader now checks for a matching IRC probe acknowledgment immediately after joining and every 30 seconds afterward, with a 15-second deadline and bounded recovery. Private diagnostics distinguish transport frames, parsed messages, accepted messages, and filtering counts. Message diagnostics are throttled; no chat content or credentials enter this log.
+
+Validation: **409 deterministic tests**, TypeScript checking, production build, Mac packaging, and strict signature verification passed. Tests cover six minutes of idle health, missing/wrong acknowledgments, stale sockets, cancellation, bounded retries, and diagnostic privacy/rate limits. A separate real IRC probe received its matching response. These checks establish transport health behavior; they do not establish receipt of Twitch messages or a successful spoken history answer.

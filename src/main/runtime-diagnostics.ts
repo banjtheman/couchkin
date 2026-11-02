@@ -28,6 +28,16 @@ const transportCodes = [
   'UND_ERR_BODY_TIMEOUT',
   'UND_ERR_SOCKET',
 ];
+const twitchEvents = [
+  'joined',
+  'probe_sent',
+  'probe_ack',
+  'probe_timeout',
+  'message_received',
+  'message_filtered',
+  'socket_closed',
+  'socket_error',
+];
 const number = (value: unknown, maximum: number): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= maximum
     ? Math.round(value)
@@ -59,13 +69,34 @@ function observation(value: unknown) {
   };
 }
 
+function twitch(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const data = value as Record<string, unknown>;
+  const event = member(data.event, twitchEvents);
+  if (!event) return null;
+  const result: Record<string, string | number | null | undefined> = { event };
+  for (const field of [
+    'receivedFrames',
+    'parsedMessages',
+    'acceptedMessages',
+    'duplicateMessages',
+    'echoMessages',
+  ])
+    result[field] = number(data[field], Number.MAX_SAFE_INTEGER);
+  for (const field of ['lastFrameAt', 'lastMessageAt', 'lastProbeAckAt'])
+    result[field] = data[field] == null ? null : number(data[field], 10_000_000_000_000);
+  return result;
+}
+
 function safeEntry(kind: unknown, value: unknown, at: string) {
   const data =
     kind === 'transport'
       ? sanitizeLiveTransportDiagnostic(value)
       : kind === 'observation'
         ? observation(value)
-        : null;
+        : kind === 'twitch'
+          ? twitch(value)
+          : null;
   return data ? { at, kind, data } : null;
 }
 
@@ -76,7 +107,7 @@ export class RuntimeDiagnostics {
   private draining = false;
   constructor(private readonly directory: string) {}
 
-  record(kind: 'transport' | 'observation', value: unknown): void {
+  record(kind: 'transport' | 'observation' | 'twitch', value: unknown): void {
     const entry = safeEntry(kind, value, new Date().toISOString());
     if (!entry) return;
     // Prefer recent evidence when a fault storm outpaces disk. Never retain

@@ -19,6 +19,57 @@ afterEach(async () => {
 });
 
 describe('private runtime diagnostics', () => {
+  it('persists Twitch receipt and health metadata without chat content or connection secrets', async () => {
+    const { log, file } = await fixture();
+    const secret = 'private-chat-or-token';
+    log.record('twitch', {
+      event: 'probe_ack',
+      receivedFrames: 12,
+      parsedMessages: 3,
+      acceptedMessages: 2,
+      duplicateMessages: 1,
+      echoMessages: 0,
+      lastFrameAt: 1_800_000_000_000,
+      lastMessageAt: 1_799_999_999_000,
+      lastProbeAckAt: 1_800_000_000_000,
+      message: secret,
+      channel: secret,
+      token: secret,
+      error: secret,
+    });
+    log.record('twitch', { event: secret, acceptedMessages: 5 });
+    log.record('twitch', {
+      event: 'probe_timeout',
+      receivedFrames: -1,
+      parsedMessages: Number.POSITIVE_INFINITY,
+      acceptedMessages: secret,
+      lastFrameAt: secret,
+      lastMessageAt: null,
+      lastProbeAckAt: null,
+    });
+    await log.flush();
+    const raw = await readFile(file, 'utf8');
+    expect(raw).not.toContain(secret);
+    const entries = JSON.parse(raw);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].data).toEqual({
+      event: 'probe_ack',
+      receivedFrames: 12,
+      parsedMessages: 3,
+      acceptedMessages: 2,
+      duplicateMessages: 1,
+      echoMessages: 0,
+      lastFrameAt: 1_800_000_000_000,
+      lastMessageAt: 1_799_999_999_000,
+      lastProbeAckAt: 1_800_000_000_000,
+    });
+    expect(entries[1].data).toEqual({
+      event: 'probe_timeout',
+      lastMessageAt: null,
+      lastProbeAckAt: null,
+    });
+  });
+
   it('retains useful failure metadata but strips content, credentials and unrecognized fields', async () => {
     const { log, file } = await fixture();
     const secret = 'secret-key-and-private-screen-content';

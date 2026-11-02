@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const sockets = vi.hoisted(() => ({
   instances: [] as Array<{
     readyState: number;
+    answerProbes: boolean;
     sent: string[];
     emit: (event: string, ...args: unknown[]) => void;
     terminate: () => void;
@@ -13,6 +14,7 @@ vi.mock('ws', () => ({
     static OPEN = 1;
     static CLOSED = 3;
     readyState = 0;
+    answerProbes = true;
     sent: string[] = [];
     handlers = new Map<string, Array<{ callback: (...args: any[]) => void; once: boolean }>>();
     constructor() {
@@ -34,8 +36,16 @@ vi.mock('ws', () => ({
       );
       callbacks.forEach((item) => item.callback(...args));
     }
-    send(message: string) {
+    send(message: string, callback?: (error?: Error) => void) {
       this.sent.push(message);
+      if (this.answerProbes && message.startsWith('PING :couchkin-health-')) {
+        const nonce = message.slice('PING :'.length).trim();
+        queueMicrotask(() => {
+          if (this.readyState === 1)
+            this.emit('message', Buffer.from(`:tmi.twitch.tv PONG tmi.twitch.tv :${nonce}\r\n`));
+        });
+      }
+      callback?.();
     }
     close() {
       this.readyState = 3;
@@ -470,10 +480,13 @@ describe('authenticated Twitch replies', () => {
   });
 
   it('suppresses only the actual reply echo before its send response arrives', async () => {
+    vi.useFakeTimers();
     mockAccount();
     const bridge = new TwitchBridge();
     const receive = vi.fn();
+    const diagnostics = vi.fn();
     bridge.onMessage(receive);
+    bridge.onDiagnostic(diagnostics);
     const socket = await connected(bridge);
     let finish!: (value: Response) => void;
     fetchMock.mockImplementationOnce(
@@ -499,6 +512,24 @@ describe('authenticated Twitch replies', () => {
       'other-same-text',
       'human-repeat',
     ]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(diagnostics.mock.calls.at(-1)?.[0]).toMatchObject({
+      event: 'probe_ack',
+      parsedMessages: 5,
+      acceptedMessages: 3,
+      duplicateMessages: 1,
+      echoMessages: 1,
+    });
+    const serialized = JSON.stringify(diagnostics.mock.calls);
+    for (const privateValue of [
+      'abcdefghijklmnopqrstuvwxyz1234',
+      'couchkin-health-',
+      'human-own',
+      'streamer',
+      'couchkin',
+      'Riff:',
+    ])
+      expect(serialized).not.toContain(privateValue);
     bridge.disconnect();
   });
 
@@ -756,6 +787,211 @@ describe('Twitch reply connection lifecycle', () => {
     expect(fetchMock.mock.calls.at(-1)?.[1].signal.aborted).toBe(true);
     resolve(Response.json({ data: [{ is_sent: true, message_id: 'late' }] }));
     await rejected;
+    bridge.disconnect();
+  });
+});
+
+describe('Twitch reader heartbeat', () => {
+  const guest = { channel: 'couchkin', username: '', token: '' };
+
+  beforeEach(() => vi.useFakeTimers());
+
+  it('bounds busy-chat diagnostics while preserving immediate first receipt and full probe counts', async () => {
+    const bridge = new TwitchBridge();
+    const diagnostics = vi.fn();
+    const receive = vi.fn();
+    bridge.onDiagnostic(diagnostics);
+    bridge.onMessage(receive);
+    const ready = bridge.connect(guest);
+    const socket = sockets.instances[0]!;
+    welcome(socket);
+    await ready;
+    const sendBurst = (offset: number, size: number) => {
+      for (let index = offset; index < offset + size; index++) {
+        const line = `@id=message-${index} :viewer!viewer@host PRIVMSG #couchkin :hello\r\n`;
+        socket.emit('message', Buffer.from(line + line));
+      }
+    };
+    const events = (event: string) =>
+      diagnostics.mock.calls.filter(([diagnostic]) => diagnostic.event === event);
+    sendBurst(0, 1000);
+    expect(receive).toHaveBeenCalledTimes(1000);
+    expect(events('message_received')).toHaveLength(1);
+    expect(events('message_received')[0]?.[0].acceptedMessages).toBe(1);
+    expect(events('message_filtered')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(4_999);
+    sendBurst(1000, 100);
+    expect(events('message_received')).toHaveLength(1);
+    expect(events('message_filtered')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    sendBurst(1100, 100);
+    expect(events('message_received')).toHaveLength(2);
+    expect(events('message_filtered')).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(diagnostics.mock.calls.at(-1)?.[0]).toMatchObject({
+      event: 'probe_ack',
+      parsedMessages: 2400,
+      acceptedMessages: 1200,
+      duplicateMessages: 1200,
+      echoMessages: 0,
+    });
+    bridge.disconnect();
+  });
+
+  it('keeps a silent channel healthy for more than six minutes through exact probe acknowledgments', async () => {
+    const bridge = new TwitchBridge();
+    const diagnostics = vi.fn();
+    const receive = vi.fn();
+    bridge.onDiagnostic(diagnostics);
+    bridge.onMessage(receive);
+    const ready = bridge.connect(guest);
+    const socket = sockets.instances[0]!;
+    welcome(socket);
+    await ready;
+    await vi.advanceTimersByTimeAsync(6 * 60_000 + 1000);
+    expect(sockets.instances).toHaveLength(1);
+    expect(socket.readyState).toBe(1);
+    const probes = socket.sent.filter((line) => line.startsWith('PING :couchkin-health-'));
+    expect(probes.length).toBeGreaterThanOrEqual(13);
+    expect(new Set(probes).size).toBe(probes.length);
+    expect(diagnostics.mock.calls.filter(([event]) => event.event === 'probe_ack')).toHaveLength(
+      probes.length,
+    );
+    expect(diagnostics.mock.calls.at(-1)?.[0]).toMatchObject({
+      event: 'probe_ack',
+      parsedMessages: 0,
+      acceptedMessages: 0,
+      lastMessageAt: null,
+      lastProbeAckAt: expect.any(Number),
+    });
+    expect(receive).not.toHaveBeenCalled();
+    expect(socket.sent.some((line) => line.startsWith('PRIVMSG'))).toBe(false);
+    bridge.disconnect();
+  });
+
+  it('does not mistake unrelated traffic or a wrong pong for acknowledgment, then reconnects', async () => {
+    const bridge = new TwitchBridge();
+    const diagnostics = vi.fn();
+    bridge.onDiagnostic(diagnostics);
+    const ready = bridge.connect(guest);
+    const first = sockets.instances[0]!;
+    first.answerProbes = false;
+    welcome(first);
+    await ready;
+    first.emit('message', Buffer.from(':tmi.twitch.tv PONG tmi.twitch.tv :wrong-nonce\r\n'));
+    first.emit('message', Buffer.from('PING :tmi.twitch.tv\r\n'));
+    first.emit('pong', Buffer.from('unrelated-websocket-pong'));
+    expect(first.sent).toContain('PONG :tmi.twitch.tv\r\n');
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(first.readyState).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(first.readyState).toBe(3);
+    expect(diagnostics.mock.calls.at(-1)?.[0]).toMatchObject({
+      event: 'probe_timeout',
+      lastProbeAckAt: null,
+      acceptedMessages: 0,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sockets.instances).toHaveLength(2);
+    const second = sockets.instances[1]!;
+    welcome(second);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(diagnostics.mock.calls.at(-1)?.[0].event).toBe('probe_ack');
+    bridge.disconnect();
+  });
+
+  it('ignores late acknowledgments and closes from a replaced socket', async () => {
+    const bridge = new TwitchBridge();
+    const diagnostics = vi.fn();
+    bridge.onDiagnostic(diagnostics);
+    const firstReady = bridge.connect(guest);
+    const first = sockets.instances[0]!;
+    first.answerProbes = false;
+    welcome(first);
+    await firstReady;
+    const oldNonce = first.sent
+      .find((line) => line.startsWith('PING :'))!
+      .slice(6)
+      .trim();
+    const secondReady = bridge.connect(guest);
+    const second = sockets.instances[1]!;
+    second.answerProbes = false;
+    welcome(second);
+    await secondReady;
+    const beforeStaleEvents = diagnostics.mock.calls.length;
+    first.emit('message', Buffer.from(`:tmi.twitch.tv PONG tmi.twitch.tv :${oldNonce}\r\n`));
+    first.emit('error', new Error('late error from replaced reader'));
+    first.emit('close');
+    expect(diagnostics).toHaveBeenCalledTimes(beforeStaleEvents);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(second.readyState).toBe(3);
+    expect(diagnostics.mock.calls.at(-1)?.[0].event).toBe('probe_timeout');
+    bridge.disconnect();
+  });
+
+  it.each([false, true])(
+    'clears pending heartbeat timers on disconnect (acknowledged=%s)',
+    async (answerProbes) => {
+      const bridge = new TwitchBridge();
+      const ready = bridge.connect(guest);
+      const socket = sockets.instances[0]!;
+      socket.answerProbes = answerProbes;
+      welcome(socket);
+      await ready;
+      await vi.advanceTimersByTimeAsync(0);
+      bridge.disconnect();
+      const sentCount = socket.sent.length;
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(socket.sent).toHaveLength(sentCount);
+      expect(sockets.instances).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('bounds retries when each new reader joins but never answers a probe', async () => {
+    const bridge = new TwitchBridge();
+    const status = vi.fn();
+    bridge.onStatus(status);
+    const ready = bridge.connect(guest);
+    const first = sockets.instances[0]!;
+    first.answerProbes = false;
+    welcome(first);
+    await ready;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await vi.advanceTimersByTimeAsync(15_000 + 1000 * 2 ** attempt);
+      expect(sockets.instances).toHaveLength(attempt + 2);
+      const retry = sockets.instances.at(-1)!;
+      retry.answerProbes = false;
+      welcome(retry);
+    }
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(status).toHaveBeenLastCalledWith(
+      false,
+      'Twitch chat could not reconnect. Connect chat again when your network is ready.',
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets.instances).toHaveLength(6);
+    bridge.disconnect();
+  });
+
+  it('keeps listener failures from breaking the chat transport and supports removing diagnostics', async () => {
+    const bridge = new TwitchBridge();
+    const diagnostics = vi.fn();
+    const remove = bridge.onDiagnostic(diagnostics);
+    bridge.onDiagnostic(() => {
+      throw new Error('observer failure');
+    });
+    const ready = bridge.connect(guest);
+    const socket = sockets.instances[0]!;
+    welcome(socket);
+    await ready;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(diagnostics.mock.calls.at(-1)?.[0].event).toBe('probe_ack');
+    remove();
+    const diagnosticCount = diagnostics.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(diagnostics).toHaveBeenCalledTimes(diagnosticCount);
+    expect(socket.readyState).toBe(1);
     bridge.disconnect();
   });
 });
