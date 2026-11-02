@@ -1291,12 +1291,13 @@ svg {
 }
 .session-chat-status > [role='status'] {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   min-width: 0;
 }
 .session-chat-status > [role='status'] svg {
   flex-shrink: 0;
+  margin-top: 2px;
 }
 .session-chat-status > [role='status'] span {
   overflow-wrap: anywhere;
@@ -1306,6 +1307,26 @@ svg {
 }
 .session-chat-status.connected > [role='status'] {
   color: var(--color-accent);
+}
+.chat-receipt-copy {
+  display: grid;
+  gap: 3px;
+}
+.chat-receipt-count {
+  color: var(--color-muted);
+}
+.live-session-status .chat-latest-message {
+  flex: 1 0 100%;
+  margin: 0;
+  padding-left: 24px;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+.chat-latest-label {
+  color: var(--color-muted);
+}
+.chat-latest-author {
+  font-weight: 600;
 }
 .session-main {
   display: grid;

@@ -85,6 +85,26 @@ async function nextSocket() {
   return sockets.instances.at(-1)!;
 }
 
+function readerNick(socket: (typeof sockets.instances)[number]) {
+  return socket.sent
+    .find((line) => line.startsWith('NICK '))!
+    .slice(5)
+    .trim();
+}
+
+function welcome(socket: (typeof sockets.instances)[number], channel = 'couchkin') {
+  socket.readyState = 1;
+  socket.emit('open');
+  const nick = readerNick(socket);
+  socket.emit(
+    'message',
+    Buffer.from(
+      `:tmi.twitch.tv 001 ${nick} :Welcome, GLHF!\r\n:${nick}!${nick}@${nick}.tmi.twitch.tv JOIN #${channel}\r\n`,
+    ),
+  );
+  return nick;
+}
+
 describe('Twitch IRC parsing and validation', () => {
   it('decodes IRCv3 tags and preserves trailing message text', () => {
     expect(decodeIrcTag('one\\stwo\\:three\\\\four\\r\\n')).toBe('one two;three\\four\r\n');
@@ -148,7 +168,7 @@ describe('Twitch IRC parsing and validation', () => {
 });
 
 describe('read-only Twitch connection', () => {
-  it('authenticates, handles fragmented input, joins, deduplicates and replies to PING only', async () => {
+  it('registers the guest reader, handles fragmented input, joins, deduplicates and replies to PING only', async () => {
     const bridge = new TwitchBridge();
     const receive = vi.fn();
     bridge.onMessage(receive);
@@ -156,15 +176,14 @@ describe('read-only Twitch connection', () => {
     const socket = await nextSocket();
     socket.readyState = 1;
     socket.emit('open');
-    expect(socket.sent[0]).toMatch(/^PASS oauth:/);
-    expect(socket.sent[1]).toBe('NICK streamer\r\n');
+    expect(socket.sent[0]).toBe('PASS SCHMOOPIIE\r\n');
+    const nick = readerNick(socket);
+    expect(nick).toMatch(/^justinfan[0-9]+$/);
+    expect(socket.sent.join('')).not.toContain('abcdefghijklmnopqrstuvwxyz1234');
+    socket.emit('message', Buffer.from(`:tmi.twitch.tv 001 ${nick} :Welcome, GLHF!\r\nPING :tmi.`));
     socket.emit(
       'message',
-      Buffer.from(':tmi.twitch.tv 001 streamer :Welcome, GLHF!\r\nPING :tmi.'),
-    );
-    socket.emit(
-      'message',
-      Buffer.from('twitch.tv\r\n:streamer!streamer@streamer.tmi.twitch.tv JOIN #couchkin\r\n'),
+      Buffer.from(`twitch.tv\r\n:${nick}!${nick}@${nick}.tmi.twitch.tv JOIN #couchkin\r\n`),
     );
     await ready;
     expect(socket.sent).toContain('JOIN #couchkin\r\n');
@@ -178,12 +197,12 @@ describe('read-only Twitch connection', () => {
     bridge.disconnect();
   });
 
-  it('rejects failed authentication without leaking server text or the token', async () => {
+  it('rejects failed guest registration without leaking server text or the token', async () => {
     const bridge = new TwitchBridge();
     const status = vi.fn();
     bridge.onStatus(status);
     const ready = bridge.connect(credentials);
-    const failed = expect(ready).rejects.toThrow('Twitch rejected the login');
+    const failed = expect(ready).rejects.toThrow('Twitch guest chat listening is unavailable');
     const socket = await nextSocket();
     socket.readyState = 1;
     socket.emit('open');
@@ -217,21 +236,6 @@ describe('read-only Twitch connection', () => {
 
 describe('guest Twitch listening and recovery', () => {
   const guest = { channel: 'couchkin', username: '', token: '' };
-  function welcome(socket: (typeof sockets.instances)[number]) {
-    socket.readyState = 1;
-    socket.emit('open');
-    const nick = socket.sent
-      .find((line) => line.startsWith('NICK '))!
-      .slice(5)
-      .trim();
-    socket.emit(
-      'message',
-      Buffer.from(
-        `:tmi.twitch.tv 001 ${nick} :Welcome, GLHF!\r\n:${nick}!${nick}@${nick}.tmi.twitch.tv JOIN #couchkin\r\n`,
-      ),
-    );
-    return nick;
-  }
 
   it('allows explicit channel-only listening without silently discarding partial credentials', () => {
     expect(validateTwitchCredentials(guest)).toEqual(guest);
@@ -339,24 +343,27 @@ describe('authenticated Twitch replies', () => {
     const ready = bridge.connect(credentials);
     await vi.waitFor(() => expect(sockets.instances.length).toBeGreaterThan(previousSockets));
     const socket = sockets.instances.at(-1)!;
-    socket.readyState = 1;
-    socket.emit('open');
-    socket.emit(
-      'message',
-      Buffer.from(
-        ':tmi.twitch.tv 001 streamer :Welcome\r\n:streamer!streamer@host JOIN #couchkin\r\n',
-      ),
-    );
+    welcome(socket);
     await ready;
     return socket;
   }
 
-  it('validates identity and scopes before exposing send access, then posts one threaded reply', async () => {
+  it('keeps validated credentials out of the guest reader and uses them for one threaded API reply', async () => {
     mockAccount();
     const bridge = new TwitchBridge();
+    const status = vi.fn();
+    bridge.onStatus(status);
     expect(bridge.chatAccess).toEqual({ canSend: false, username: null });
     const socket = await connected(bridge);
     expect(bridge.chatAccess).toEqual({ canSend: true, username: 'streamer' });
+    expect(socket.sent[0]).toBe('PASS SCHMOOPIIE\r\n');
+    expect(readerNick(socket)).toMatch(/^justinfan[0-9]+$/);
+    expect(socket.sent.join('')).not.toContain('abcdefghijklmnopqrstuvwxyz1234');
+    expect(socket.sent).not.toContain('NICK streamer\r\n');
+    expect(status).toHaveBeenLastCalledWith(
+      true,
+      'Listening to #couchkin as a guest; replies as streamer.',
+    );
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://id.twitch.tv/oauth2/validate');
     expect(fetchMock.mock.calls[1]?.[0]).toBe('https://api.twitch.tv/helix/users?login=couchkin');
     await expect(
@@ -365,6 +372,7 @@ describe('authenticated Twitch replies', () => {
     const [url, options] = fetchMock.mock.calls.at(-1)!;
     expect(url).toBe('https://api.twitch.tv/helix/chat/messages');
     expect(options.method).toBe('POST');
+    expect(options.headers.Authorization).toBe('Bearer abcdefghijklmnopqrstuvwxyz1234');
     expect(options.headers['Client-Id']).toBe('testclient');
     expect(JSON.parse(options.body)).toEqual({
       broadcaster_id: '456',
@@ -428,6 +436,36 @@ describe('authenticated Twitch replies', () => {
     incoming(socket, 'real-own', 'streamer', 'Riff, hello');
     incoming(socket, 'real-viewer', 'viewer', 'Riff, hello');
     expect(receive.mock.calls.map(([message]) => message.id)).toEqual(['real-own', 'real-viewer']);
+    bridge.disconnect();
+  });
+
+  it('reconnects the guest reader while retaining the validated API writer', async () => {
+    vi.useFakeTimers();
+    mockAccount();
+    const bridge = new TwitchBridge();
+    const receive = vi.fn();
+    bridge.onMessage(receive);
+    const first = await connected(bridge);
+    first.emit('message', Buffer.from(':tmi.twitch.tv RECONNECT\r\n'));
+    expect(bridge.chatAccess).toEqual({ canSend: false, username: 'streamer' });
+    await vi.advanceTimersByTimeAsync(1000);
+    const second = sockets.instances.at(-1)!;
+    expect(second).not.toBe(first);
+    expect(bridge.chatAccess.canSend).toBe(false);
+    expect(welcome(second)).toMatch(/^justinfan[0-9]+$/);
+    expect(second.sent[0]).toBe('PASS SCHMOOPIIE\r\n');
+    expect(second.sent.join('')).not.toContain('abcdefghijklmnopqrstuvwxyz1234');
+    expect(bridge.chatAccess).toEqual({ canSend: true, username: 'streamer' });
+    incoming(second, 'human-after-reconnect', 'streamer', 'Riff, still here?');
+    expect(receive).toHaveBeenCalledWith({
+      id: 'human-after-reconnect',
+      user: 'streamer',
+      text: 'Riff, still here?',
+    });
+    await bridge.sendReply({ text: 'Riff: Still here.', replyToId: 'human-after-reconnect' });
+    expect(fetchMock.mock.calls.at(-1)?.[1].headers.Authorization).toBe(
+      'Bearer abcdefghijklmnopqrstuvwxyz1234',
+    );
     bridge.disconnect();
   });
 
@@ -678,14 +716,8 @@ describe('Twitch reply connection lifecycle', () => {
     const bridge = new TwitchBridge();
     const ready = bridge.connect({ ...credentials, channel: 'streamer' });
     const socket = await nextSocket();
-    socket.readyState = 1;
-    socket.emit('open');
-    socket.emit(
-      'message',
-      Buffer.from(
-        ':tmi.twitch.tv 001 streamer :Welcome\r\n:streamer!streamer@host JOIN #streamer\r\n',
-      ),
-    );
+    expect(bridge.chatAccess.canSend).toBe(false);
+    welcome(socket, 'streamer');
     await ready;
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(bridge.chatAccess.canSend).toBe(true);
@@ -707,14 +739,7 @@ describe('Twitch reply connection lifecycle', () => {
     const bridge = new TwitchBridge();
     const ready = bridge.connect({ ...credentials, channel: 'streamer' });
     const socket = await nextSocket();
-    socket.readyState = 1;
-    socket.emit('open');
-    socket.emit(
-      'message',
-      Buffer.from(
-        ':tmi.twitch.tv 001 streamer :Welcome\r\n:streamer!streamer@host JOIN #streamer\r\n',
-      ),
-    );
+    welcome(socket, 'streamer');
     await ready;
     let resolve!: (value: Response) => void;
     fetchMock.mockImplementationOnce(

@@ -1232,12 +1232,21 @@ function Session({
               ) : (
                 <MessageSquare size={16} />
               )}
-              <span>
-                {state.twitch.state === 'connected'
-                  ? `Chat connected${state.settings.twitchChannel ? ` · #${state.settings.twitchChannel.replace(/^#/, '')}` : ''}`
-                  : state.twitch.state === 'connecting'
-                    ? `Connecting chat · ${state.character.name} can’t read chat yet.`
-                    : `Chat disconnected · ${state.character.name} can’t read chat.`}
+              <span className="chat-receipt-copy">
+                <span>
+                  {state.twitch.state === 'connected'
+                    ? `Chat connected${state.settings.twitchChannel ? ` · #${state.settings.twitchChannel.replace(/^#/, '')}` : ''}`
+                    : state.twitch.state === 'connecting'
+                      ? `Connecting chat · ${state.character.name} can’t read chat yet.`
+                      : `Chat disconnected · ${state.character.name} can’t read chat.`}
+                </span>
+                {state.twitch.state === 'connected' && (
+                  <span className="chat-receipt-count">
+                    {state.twitchRead.receivedCount === 0
+                      ? 'Waiting for a new message'
+                      : `${state.twitchRead.receivedCount} ${state.twitchRead.receivedCount === 1 ? 'message' : 'messages'} received${state.twitchRead.lastReceivedAt !== null ? ` · Last received ${time(state.twitchRead.lastReceivedAt)}` : ''}`}
+                  </span>
+                )}
               </span>
             </div>
             {state.twitch.state !== 'connected' && (
@@ -1245,6 +1254,13 @@ function Session({
                 {state.twitch.state === 'connecting' ? 'Check chat connection' : 'Connect chat'}
                 <ArrowRight size={15} />
               </button>
+            )}
+            {state.twitch.state === 'connected' && state.twitchRead.lastMessage && (
+              <p className="chat-latest-message">
+                <span className="chat-latest-label">Latest:</span>{' '}
+                <span className="chat-latest-author">{state.twitchRead.lastMessage.user}:</span>{' '}
+                {state.twitchRead.lastMessage.text}
+              </p>
             )}
           </div>
         </section>

@@ -9,6 +9,7 @@ export class RecentTwitchChat {
   private channel = '';
   private joinedAt: number | null = null;
   private messages: Array<TwitchMessage & { receivedAt: number }> = [];
+  private receivedCount = 0;
 
   selectChannel(channel: string) {
     this.channel = channel.trim().replace(/^#/, '').toLowerCase();
@@ -18,6 +19,7 @@ export class RecentTwitchChat {
   connection(connected: boolean, now = Date.now()) {
     if (!connected || !this.connected) {
       this.messages = [];
+      this.receivedCount = 0;
       this.joinedAt = connected ? now : null;
     }
     this.connected = connected;
@@ -25,6 +27,7 @@ export class RecentTwitchChat {
 
   receive(message: TwitchMessage, now = Date.now()) {
     if (!this.connected) return;
+    this.receivedCount++;
     this.messages.push({
       id: message.id,
       user: message.user,
@@ -32,6 +35,15 @@ export class RecentTwitchChat {
       receivedAt: now,
     });
     this.messages = this.messages.slice(-MAX_MESSAGES);
+  }
+
+  receipt() {
+    const latest = this.messages.at(-1);
+    return {
+      receivedCount: this.receivedCount,
+      lastReceivedAt: latest?.receivedAt ?? null,
+      lastMessage: latest ? { user: latest.user, text: latest.text.slice(0, 160) } : null,
+    };
   }
 
   snapshot(now = Date.now()) {

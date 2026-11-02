@@ -51,6 +51,11 @@ export interface AppState {
   codex: Connection;
   obs: Connection;
   twitch: Connection;
+  twitchRead: {
+    receivedCount: number;
+    lastReceivedAt: number | null;
+    lastMessage: { user: string; text: string } | null;
+  };
   twitchChat: {
     canSend: boolean;
     username: string | null;

@@ -225,6 +225,7 @@ export class Controller extends EventEmitter {
     this.twitch.onStatus((connected, message) => {
       this.state.twitch = { state: connected ? 'connected' : 'disconnected', message };
       this.recentTwitchChat.connection(connected);
+      this.state.twitchRead = this.recentTwitchChat.receipt();
       this.recordConnection('twitch', connected ? 'connected' : 'disconnected');
       if (this.live.connected) {
         try {
@@ -274,6 +275,8 @@ export class Controller extends EventEmitter {
     });
     this.twitch.onMessage((message) => {
       this.recentTwitchChat.receive(message);
+      this.state.twitchRead = this.recentTwitchChat.receipt();
+      if (this.state.twitchRead.receivedCount === 1) this.recordConnection('twitch', 'receiving');
       this.addMessage('chat', `${message.user}: ${message.text}`);
       if (this.state.live.state === 'connected' && this.live.connected) {
         try {

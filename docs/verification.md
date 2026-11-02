@@ -115,3 +115,12 @@ The user reported invented chat summaries after a stream. Inspection found that 
 The reader now preserves real broadcaster messages while suppressing known automated reply echoes. A dedicated current-connection chat buffer supplies a new `get_recent_chat` tool, with explicit disconnected/empty states, timestamps, a five-minute window, and channel isolation. Live instructions require fresh tool evidence for chat questions. The session page displays chat availability next to the microphone.
 
 Validation: **399 deterministic tests**, TypeScript checking, and production build passed. A separate real API check used synthetic messages, without capturing microphone/game data or posting to Twitch. In both cases the model called `get_recent_chat`: disconnected returned “Can't read chat right now—the connection's down”; the two-message fixture was summarized accurately. Both sessions finalized usage with no faults. This is a limited grounding check, not a guarantee against future model errors or proof that Twitch messages missed before joining can be recovered.
+
+
+### Live chat reception follow-up
+
+A controlled test after the chat-grounding update showed why connection status alone was insufficient. The user's marker reached an independent guest reader, but did not appear in the signed-in app's conversation. Switching the same app to guest listening received and displayed a second marker from the same broadcaster account. This isolates an observed receive-path difference, not a general claim that Twitch suppresses all same-account messages.
+
+The prototype now uses the tested guest IRC reader while keeping the signed-in account for authenticated Helix replies. The UI exposes received count, receipt time, and latest message preview. Message content stays in the existing in-memory app state; only the first-received transition is added to the private bounded connection log. A future EventSub reader remains the officially supported migration path described in the chat documentation.
+
+The integrated follow-up passed **400 tests**, TypeScript checking, and the production build. Transport coverage confirms that the guest reader never receives the account OAuth token, while Helix replies keep the validated account identity through reader reconnects.

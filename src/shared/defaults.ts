@@ -34,6 +34,7 @@ export const initialState: AppState = {
   codex: { state: 'disconnected', message: 'Check your local Codex login' },
   obs: { state: 'disconnected', message: 'Connect your game source' },
   twitch: { state: 'disconnected', message: 'Optional — bring chat along' },
+  twitchRead: { receivedCount: 0, lastReceivedAt: null, lastMessage: null },
   twitchChat: {
     canSend: false,
     username: null,

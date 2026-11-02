@@ -6,7 +6,7 @@ Couchkin can listen to Twitch chat, answer addressed viewers aloud, and optional
 
 For listening only, enter a channel's login name in **Connections → Twitch chat** and choose **Listen to chat**. Guest listening needs no token or stream key. It does not use the Twitch sign-in from your browser.
 
-The session page shows whether chat is connected beside the microphone controls. Restarting the app does not reconnect Twitch: use **Connect chat** to listen again, or sign in again for replies. Starting voice alone does not join Twitch.
+The session page shows whether chat is connected beside the microphone controls, plus the received-message count, last receipt time, and a preview of the latest message. A successful join alone is not evidence that messages are arriving. Restarting the app does not reconnect Twitch: use **Connect chat** to listen again, or sign in again for replies. Starting voice alone does not join Twitch.
 
 When asked what chat is saying, Live is instructed to call **get_recent_chat** before answering. That tool returns connection status and up to 20 messages received on the current connection within the past five minutes, with names and timestamps. This separate in-memory buffer survives a long spoken conversation, but is cleared on chat disconnect or channel change. It is not written to disk and does not backfill missed messages. Disconnected and no-recent-message states are explicit; neither allows invented quotes or viewer consensus.
 
@@ -37,7 +37,7 @@ A stream does not have to be broadcasting to test its chat. Test the authenticat
 
 ## Listening and recovery
 
-The IRC bridge requests message tags, handles PING/PONG, parses bounded buffers, and deduplicates message IDs. Established connections retry after interruptions or Twitch-requested reconnects at 1, 2, 4, 8, and 16 seconds. Five failed attempts stop recovery and request manual reconnection. Disconnect cancels pending retries. Messages missed while disconnected are not replayed.
+The IRC reader uses a guest transport identity, including when an account is signed in for replies. The account token remains in memory for identity validation and authenticated Helix posting; it is not used as the reader’s IRC login. This separates the tested receive path from the account that sends Riff’s messages. The IRC bridge requests message tags, handles PING/PONG, parses bounded buffers, and deduplicates message IDs. Established connections retry after interruptions or Twitch-requested reconnects at 1, 2, 4, 8, and 16 seconds. Five failed attempts stop recovery and request manual reconnection. Disconnect cancels pending retries. Messages missed while disconnected are not replayed.
 
 On October 26, 2026, guest IRC joined the user's channel and actual Twitch messages reached both the earlier Codex and packaged Live voice paths. These were incoming-chat tests, not evidence of Couchkin sending text. See the [verification record](verification.md).
 
@@ -45,6 +45,6 @@ Guest access is not documented in Twitch's current authentication guide; it rema
 
 ## Regression checks
 
-`npm test -- tests/twitch.test.ts` covers parsing, guest listening, authenticated identity/scope checks, threaded API sends, confirmed versus dropped delivery, automated-reply echo suppression while preserving real broadcaster messages, invalid text, sanitized failures, cancellation, token revocation, and periodic validation. The 41 transport tests passed with local fixtures; they do not connect to Twitch or post messages.
+`npm test -- tests/twitch.test.ts` covers parsing, guest listening, authenticated identity/scope checks, threaded API sends, confirmed versus dropped delivery, automated-reply echo suppression while preserving real broadcaster messages, invalid text, sanitized failures, cancellation, token revocation, and periodic validation. The 42 transport tests passed with local fixtures; they do not connect to Twitch or post messages.
 
 Device sign-in and controller reply-policy checks are separate from transport tests. Run the full `npm run check` before packaging. Real authorization, posted-message appearance, moderation behavior, and cooldown behavior in an actual channel still require an end-to-end rehearsal.

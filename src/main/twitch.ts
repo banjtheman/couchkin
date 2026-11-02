@@ -284,11 +284,9 @@ export class TwitchBridge {
   }
 
   private connectedMessage(credentials: TwitchCredentials): string {
-    return !credentials.username
-      ? `Listening to #${credentials.channel} as a guest (read-only).`
-      : this.chatAccess.canSend
-        ? `Connected to #${credentials.channel} as ${credentials.username}. Chat replies are available.`
-        : `Listening to #${credentials.channel} as ${credentials.username} (read-only).`;
+    return this.chatAccess.canSend
+      ? `Listening to #${credentials.channel} as a guest; replies as ${credentials.username}.`
+      : `Listening to #${credentials.channel} as a guest (read-only).`;
   }
 
   /** One confirmed API send, with no retries: an ambiguous network failure may have delivered. */
@@ -515,9 +513,11 @@ export class TwitchBridge {
   }
 
   private connectAttempt(credentials: TwitchCredentials, retrying: boolean): Promise<void> {
-    const { channel, token } = credentials;
-    const guest = !credentials.username && !token;
-    const username = guest ? `justinfan${randomInt(10000, 100000000)}` : credentials.username;
+    const { channel } = credentials;
+    // Keep public-chat receiving separate from the authenticated Helix writer.
+    // Guest receiving passed the live broadcaster-message test where the signed-in
+    // reader missed messages. This is tested compatibility, not an OAuth entitlement.
+    const readerUsername = `justinfan${randomInt(10000, 100000000)}`;
     const socket = new WebSocket(TWITCH_IRC_URL, {
       maxPayload: MAX_BUFFER,
       handshakeTimeout: 12_000,
@@ -558,9 +558,7 @@ export class TwitchBridge {
       const timer = setTimeout(
         () =>
           fail(
-            guest
-              ? 'Twitch did not confirm joining that public channel. Check the channel name or try an account connection.'
-              : 'Twitch did not confirm joining the channel. Check the channel, token, and chat:read permission.',
+            'Twitch did not confirm joining that public channel. Check the channel name and reconnect chat.',
             retrying,
           ),
         CONNECT_TIMEOUT_MS,
@@ -568,11 +566,10 @@ export class TwitchBridge {
       this.cancelPending = () => finish('Twitch connection was cancelled.');
       socket.once('open', () => {
         if (this.socket !== socket) return;
-        // Guest access is a tested compatibility path, not a documented OAuth entitlement.
-        // SCHMOOPIIE is Twitch's conventional non-secret guest placeholder.
-        // Real credentials stay in memory and never enter status or persistence.
-        socket.send(guest ? 'PASS SCHMOOPIIE\r\n' : `PASS oauth:${token}\r\n`);
-        socket.send(`NICK ${username}\r\n`);
+        // SCHMOOPIIE is a non-secret guest placeholder. Real account credentials
+        // remain in the validated API writer and never enter the IRC transport.
+        socket.send('PASS SCHMOOPIIE\r\n');
+        socket.send(`NICK ${readerUsername}\r\n`);
         socket.send('CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n');
       });
       socket.on('message', (raw) => {
@@ -601,9 +598,7 @@ export class TwitchBridge {
               )
             ) {
               fail(
-                guest
-                  ? 'Twitch guest listening is unavailable. Try an account connection with chat:read access.'
-                  : 'Twitch rejected the login. Use a fresh chat:read token for the account username entered.',
+                'Twitch guest chat listening is unavailable. Reconnect chat or try again later.',
               );
               return;
             }
@@ -622,7 +617,7 @@ export class TwitchBridge {
           }
           const ownJoin =
             message.command === 'JOIN' &&
-            message.prefix.split('!')[0]?.toLowerCase() === username &&
+            message.prefix.split('!')[0]?.toLowerCase() === readerUsername &&
             message.params[0]?.toLowerCase() === `#${channel}`;
           const roomReady =
             message.command === 'ROOMSTATE' && message.params[0]?.toLowerCase() === `#${channel}`;

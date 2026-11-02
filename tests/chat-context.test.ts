@@ -48,10 +48,16 @@ describe('authoritative recent Twitch chat', () => {
     chat.selectChannel('first');
     chat.connection(true, 1);
     for (let i = 0; i < 40; i++) chat.receive(message(String(i)), 10 + i);
+    expect(chat.receipt()).toEqual({
+      receivedCount: 40,
+      lastReceivedAt: 49,
+      lastMessage: { user: 'viewer', text: 'That boss had one HP!' },
+    });
     expect(chat.snapshot(60).messages.map((m) => m.id)).toEqual(
       Array.from({ length: 20 }, (_, i) => String(i + 20)),
     );
     chat.connection(false, 70);
+    expect(chat.receipt()).toEqual({ receivedCount: 0, lastReceivedAt: null, lastMessage: null });
     expect(chat.snapshot(80).messages).toEqual([]);
     chat.connection(true, 90);
     expect(chat.snapshot(100).status).toBe('waiting');

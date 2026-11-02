@@ -227,6 +227,11 @@ describe('Live controller lifecycle and context', () => {
     twitch.statusListener(true, 'Joined');
     await controller.request({ type: 'start-session' });
     twitch.listener({ id: 'real', user: 'viewer', text: 'Try the poison card.' });
+    expect(controller.state.twitchRead).toMatchObject({
+      receivedCount: 1,
+      lastReceivedAt: expect.any(Number),
+      lastMessage: { user: 'viewer', text: 'Try the poison card.' },
+    });
     for (let i = 0; i < 30; i++)
       controller.state.messages.push({
         id: `voice-${i}`,
@@ -251,6 +256,11 @@ describe('Live controller lifecycle and context', () => {
     live.emit('tool', { callId: 'context', name: 'get_stream_context', arguments: {} });
     expect(live.submitToolResult.mock.calls.at(-1)[1].context.twitchChat.messages).toHaveLength(1);
     twitch.statusListener(false, 'Disconnected');
+    expect(controller.state.twitchRead).toEqual({
+      receivedCount: 0,
+      lastReceivedAt: null,
+      lastMessage: null,
+    });
     live.emit('tool', { callId: 'offline', name: 'get_recent_chat', arguments: {} });
     expect(live.submitToolResult.mock.calls.at(-1)[1]).toMatchObject({
       connected: false,
